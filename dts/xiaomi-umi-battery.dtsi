@@ -45,37 +45,62 @@
 			status = "okay";
 		};
 
-		/* 充电器：SMB5（qcom_pm8150b_charger.c 只用到 bat-ov /
-		 * usbin-icl-change / wdog-bark 这三个 IRQ，其余名字留着对齐厂商 DT） */
+		/* SMB5 peripheral/bit mapping: MiCode umi-q-oss smb5-lib.h
+		 * enum smb_irq_index and smb5-reg.h peripheral base addresses.
+		 */
 		pm8150b_charger: charger@1000 {
 			compatible = "qcom,pm8150b-charger";
 			reg = <0x1000>;
-			interrupts = <0x2 0x13 0x0 IRQ_TYPE_EDGE_BOTH>,
-				     <0x2 0x13 0x1 IRQ_TYPE_EDGE_BOTH>,
-				     <0x2 0x13 0x2 IRQ_TYPE_EDGE_BOTH>,
-				     <0x2 0x13 0x3 IRQ_TYPE_EDGE_BOTH>,
+			interrupts = <0x2 0x12 0x2 IRQ_TYPE_EDGE_BOTH>,
 				     <0x2 0x13 0x4 IRQ_TYPE_EDGE_BOTH>,
-				     <0x2 0x13 0x5 IRQ_TYPE_EDGE_BOTH>,
-				     <0x2 0x13 0x6 IRQ_TYPE_EDGE_BOTH>,
+				     <0x2 0x16 0x1 IRQ_TYPE_EDGE_BOTH>,
 				     <0x2 0x13 0x7 IRQ_TYPE_EDGE_BOTH>;
 			interrupt-names = "bat-ov",
 					  "usbin-plugin",
-					  "usbin-icl-change",
 					  "wdog-bark",
-					  "usb-plugin",
-					  "usb-icl-change",
-					  "dc-plugin",
-					  "dc-icl-change";
+					  "usbin-icl-change";
 			io-channels = <&pm8150b_adc ADC5_USB_IN_V_16>,
 				      <&pm8150b_adc ADC5_USB_IN_I>;
 			io-channel-names = "usb_in_v_div_16", "usb_in_i_uv";
 			monitored-battery = <&battery>;
+			usb-c-power-supply = <&pm8150b_typec>;
 			status = "okay";
 		};
 	};
 };
 
+/* Instantiate the two channels consumed above. Scaling uses the upstream
+ * adc5_chans_pmic defaults, including the USB voltage divider preset.
+ */
+&pm8150b_adc {
+	channel@7 {
+		reg = <ADC5_USB_IN_I>;
+		label = "usb_in_i_uv";
+	};
+
+	channel@8 {
+		reg = <ADC5_USB_IN_V_16>;
+		label = "usb_in_v_div_16";
+	};
+};
+
 /* VBUS：主充电器要能报 vbus 电压/限流 */
+&pm8150b_typec {
+	/* Only attach a PD connector when its local SMB5 load driver is present.
+	 * Fixed 5 V until an explicit PPS request; budgets follow battery DT.
+	 * These are bring-up limits, not a 25/30 W charge-pump profile.
+	 */
+	connector {
+		compatible = "usb-c-connector";
+		label = "USB-C";
+		power-role = "sink";
+		data-role = "device";
+		sink-pdos = <PDO_FIXED(5000, 1500, PDO_FIXED_USB_COMM)
+			     PDO_PPS_APDO(5000, 9000, 1500)>;
+		op-sink-microwatt = <2500000>;
+	};
+};
+
 &pm8150b_vbus {
 	regulator-min-microamp = <500000>;
 	regulator-max-microamp = <3000000>;
@@ -94,14 +119,6 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&bq2597x_master_int_default>;
 
-		ti,bq2597x,bat-ovp-alarm-disable;
-		ti,bq2597x,bat-ocp-disable;
-		ti,bq2597x,bat-ocp-alarm-disable;
-		ti,bq2597x,bat-ucp-alarm-disable;
-		ti,bq2597x,bat-ucp-disable;
-		ti,bq2597x,bat-therm-disable;
-		ti,bq2597x,bus-therm-disable;
-		ti,bq2597x,die-therm-disable;
 
 		ti,bq2597x,bat-ovp-threshold = <4450>;
 		ti,bq2597x,bat-ovp-alarm-threshold = <4450>;
@@ -115,7 +132,9 @@
 		ti,bq2597x,die-therm-threshold = <145>;
 		ti,bq2597x,ac-ovp-threshold = <14>;
 
-		status = "okay";
+		/* Board thresholds/sense resistor need device acceptance.
+		 * Active charge-pump control is unsupported pending that work. */
+		status = "disabled";
 	};
 };
 

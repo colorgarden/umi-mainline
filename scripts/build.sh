@@ -331,6 +331,9 @@ done
 # 面板驱动：只有它编进去了，&mdss_dsi0 下面那个 umi-panel 节点才有人接。
 # 编成模块（=m）等于没编：initramfs 里不会去加载它，DSI 就一直 EPROBE_DEFER。
 check_y DRM_PANEL_XIAOMI_UMI
+check_y TYPEC_TCPM
+check_y TYPEC_QCOM_PMIC
+check_y REGULATOR_QCOM_USB_VBUS
 # 触摸：同样是 =m 等于没编（initramfs 无模块加载器）。
 #   TOUCH=fts521（默认）主线移植版，走标准 i2c_transfer
 #   TOUCH=stfts         厂商 5.2.4 驱动（取自 zhaoyuanwang123/armbian 的
