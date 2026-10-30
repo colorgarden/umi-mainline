@@ -40,6 +40,12 @@ run() {
 }
 
 echo "== 1/6 装包"
+# pacman 7 的下载沙箱依赖 Landlock，内核没编 CONFIG_SECURITY_LANDLOCK 时必须关掉
+# （--disable-sandbox 只影响本次；抄进 pacman.conf 是为了之后手动 pacman 也不炸）
+if [ "$APPLY" = yes ]; then
+	sed -i 's/^#DisableSandboxFilesystem$/DisableSandboxFilesystem/; s/^#DisableSandboxSyscalls$/DisableSandboxSyscalls/' /etc/pacman.conf
+fi
+run "pacman -Sy --noconfirm --disable-sandbox"
 run "pacman -S --noconfirm --needed --disable-sandbox plasma-mobile plasma-settings kscreen konsole sudo"
 
 echo "== 2/6 用户 $USER_NAME（$GROUPS）"
@@ -99,15 +105,29 @@ EOF
 fi
 echo "  # /etc/udev/rules.d/71-umi-input-uaccess.rules"
 
-echo "== 6/6 locale = UTF-8"
+echo "== 6/6 locale = UTF-8，界面中文"
 if [ "$APPLY" = yes ]; then
-	grep -q '^#en_US\.UTF-8 UTF-8' /etc/locale.gen && \
-		sed -i 's/^#en_US\.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
-	grep -q '^en_US\.UTF-8 UTF-8' /etc/locale.gen || \
-		echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen
+	# zh_CN 必须在 locale.gen 里真的生成过，否则 Qt 只拿到 C -> 界面全英文
+	for L in en_US.UTF-8 zh_CN.UTF-8; do
+		sed -i "s/^#\($L UTF-8\).*/\1/" /etc/locale.gen
+		grep -qx "$L UTF-8" /etc/locale.gen || echo "$L UTF-8" >> /etc/locale.gen
+	done
 	locale-gen >/dev/null
-	printf 'LANG=en_US.UTF-8\n' > /etc/locale.conf
+	printf 'LANG=zh_CN.UTF-8\n' > /etc/locale.conf
+	# 没有 CJK 字体时中文全是豆腐块（zh_CN 的 340 个 *.mo 本来就装好了）
+	if ! fc-list :lang=zh 2>/dev/null | grep -q .; then
+		pacman -Sy --noconfirm --disable-sandbox --needed noto-fonts-cjk || \
+			pacman -Sy --noconfirm --disable-sandbox --needed wqy-zenhei
+		fc-cache -f >/dev/null 2>&1 || true
+	fi
+	# Plasma 自己还读 plasma-localerc：LANG 管 gettext，这里管界面语言+日期格式
+	CFG=/home/$USER_NAME/.config/plasma-localerc
+	install -d -o "$USER_NAME" -g "$USER_NAME" "$(dirname "$CFG")"
+	printf '[Formats]\nLANG=zh_CN\n\n[Translations]\nLANGUAGE=zh_CN\n' > "$CFG"
+	chown "$USER_NAME:$USER_NAME" "$CFG"
 	echo "  locale.conf = $(cat /etc/locale.conf)"
+	echo "  中文字体  = $(fc-list :lang=zh 2>/dev/null | wc -l) 个"
+	echo "  # MiSans / KDE 字体 / 终端等宽字体 -> scripts/umi-zh.sh（docs/KDE.md §8）"
 fi
 
 echo

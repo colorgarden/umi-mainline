@@ -148,6 +148,7 @@ struct fts_ts_info *fts_info;
 
 static int fts_init_sensing(struct fts_ts_info *info);
 static int fts_mode_handler(struct fts_ts_info *info, int force);
+static void fts_water_wd_work(struct work_struct *work);
 static int fts_chip_initialization(struct fts_ts_info *info, int init_type);
 static const char *fts_get_limit(struct fts_ts_info *info);
 static irqreturn_t fts_event_handler(int irq, void *ts_info);
@@ -3581,13 +3582,20 @@ static void fts_status_event_handler(struct fts_ts_info *info,
 		break;
 
 	case EVT_TYPE_STATUS_WATER:
+		atomic_inc(&info->water_wd_events);
+		/*
+		 * 这条事件在固件抽风时每秒来好几个，把 dmesg 刷满、把别的
+		 * 日志挤掉，所以只在 DEBUG 下打印（logError(0,..)）。
+		 * 正常/异常都由 fts_water_wd_work() 的 "water-mode latch"
+		 * 那行汇总，不需要逐条看。
+		 */
 		if (event[2] == 1)
-			logError(1,
+			logError(0,
 				 "%s %s Enter Water mode = %02X %02X %02X %02X %02X %02X\n",
 				 tag, __func__, event[2], event[3], event[4],
 				 event[5], event[6], event[7]);
 		else
-			logError(1,
+			logError(0,
 				 "%s %s Exit Water mode = %02X %02X %02X %02X %02X %02X\n",
 				 tag, __func__, event[2], event[3], event[4],
 				 event[5], event[6], event[7]);
@@ -3998,6 +4006,14 @@ static void fts_ts_sleep_work(struct work_struct *work)
 			if (eventId < NUM_EVT_ID) {
 				event_handler = info->event_dispatch_table[eventId];
 				event_handler(info, (evt_data));
+				/*
+				 * 统计真实触摸事件（进点/移动），给 water-mode 看门狗用。
+				 * 注意 install_handler 里的 ENTER_POINT 是给 token paste 用的，
+				 * 不是独立标识符，这里必须用 EVT_ID_*。
+				 */
+				if (eventId == (EVT_ID_ENTER_POINT >> 4) ||
+				    eventId == (EVT_ID_MOTION_POINT >> 4))
+					atomic_inc(&info->water_wd_touch);
 				pre_id[0] = evt_data[0];
 				pre_id[1] = evt_data[1];
 				pre_id[2] = evt_data[2];
@@ -4081,6 +4097,14 @@ static irqreturn_t fts_event_handler(int irq, void *ts_info)
 			if (eventId < NUM_EVT_ID) {
 				event_handler = info->event_dispatch_table[eventId];
 				event_handler(info, (evt_data));
+				/*
+				 * 统计真实触摸事件（进点/移动），给 water-mode 看门狗用。
+				 * 注意 install_handler 里的 ENTER_POINT 是给 token paste 用的，
+				 * 不是独立标识符，这里必须用 EVT_ID_*。
+				 */
+				if (eventId == (EVT_ID_ENTER_POINT >> 4) ||
+				    eventId == (EVT_ID_MOTION_POINT >> 4))
+					atomic_inc(&info->water_wd_touch);
 				pre_id[0] = evt_data[0];
 				pre_id[1] = evt_data[1];
 				pre_id[2] = evt_data[2];
@@ -4090,6 +4114,48 @@ static irqreturn_t fts_event_handler(int irq, void *ts_info)
 	input_sync(info->input_dev);
 	info->irq_status = false;
 	return IRQ_HANDLED;
+}
+
+/**
+ * water-mode 看门狗（= 把固件的“水模式”从用户视野里删掉）
+ *
+ * 现象（实测）：固件会卡在 Enter/Exit Water mode 里反复横跳——60 秒里
+ * 324 个中断全是水模式状态事件、触摸事件 0 个，用户侧表现就是“用几分钟
+ * 后触摸彻底没了”。kernel 这边看不出任何错误（Sense 仍是 ON，i2c 也正常），
+ * 只有 sysreset + panel init 能解开（`echo '51 02' > /proc/fts/driver_test`
+ * 能当场复原，这就是本函数做的事）。
+ *
+ * 关键观察：**正常使用期间水模式事件是 0**（上一版 boot 里前 470 秒一个都
+ * 没有，之后突然开始每秒 ~5 个）。所以判据可以狠狠收紧：1 秒窗口里只要有
+ * 2 个水模式事件、且这段时间没有任何触摸事件，就认定固件又开始抽风，立刻
+ * sysreset + panel init。相当于对用户来说“水模式不存在”。
+ *
+ * 冷却 10 s 防止：万一真进水/手上带水导致事件持续，也不会变成死循环，
+ * 每 10 秒才允许复位一次。
+ */
+static void fts_water_wd_work(struct work_struct *work)
+{
+	struct fts_ts_info *info =
+	    container_of(work, struct fts_ts_info, water_wd_work.work);
+	int water = atomic_read(&info->water_wd_events);
+	int touch = atomic_read(&info->water_wd_touch);
+	int dwater = water - info->water_wd_last_water;
+	int dtouch = touch - info->water_wd_last_touch;
+
+	info->water_wd_last_water = water;
+	info->water_wd_last_touch = touch;
+
+	if (info->resume_bit && dwater >= 2 && dtouch == 0 &&
+	    time_after(jiffies, info->water_wd_last_reset + 10 * HZ)) {
+		logError(1,
+			 "%s %s: water-mode latch (water +%d, touch +%d) -> sysreset + panel init\n",
+			 tag, __func__, dwater, dtouch);
+		info->water_wd_last_reset = jiffies;
+		production_test_initialization(SPECIAL_PANEL_INIT);
+		fts_init_sensing(info);
+	}
+
+	schedule_delayed_work(&info->water_wd_work, msecs_to_jiffies(1000));
 }
 
 /**@}*/
@@ -6248,6 +6314,14 @@ static int fts_probe(struct spi_device *client)
 #endif
 	info->sensor_scan = true;
 
+	/* water-mode 看门狗：3 秒一轮，见 fts_water_wd_work() */
+	atomic_set(&info->water_wd_events, 0);
+	atomic_set(&info->water_wd_touch, 0);
+	info->water_wd_last_water = 0;
+	info->water_wd_last_touch = 0;
+	info->water_wd_last_reset = jiffies - 10 * HZ;
+	INIT_DELAYED_WORK(&info->water_wd_work, fts_water_wd_work);
+
 	logError(0, "%s SET Device File Nodes: \n", tag);
 	/* sysfs stuff */
 	info->attrs.attrs = fts_attr_group;
@@ -6335,6 +6409,7 @@ static int fts_probe(struct spi_device *client)
 #endif
 
 	logError(1, "%s Probe Finished! \n", tag);
+	schedule_delayed_work(&info->water_wd_work, msecs_to_jiffies(5000));
 	return OK;
 ProbeErrorExit_8:
 	device_destroy(info->fts_tp_class, 0x49);
@@ -6396,6 +6471,7 @@ static int fts_remove(struct spi_device *client)
 
 	struct fts_ts_info *info = dev_get_drvdata(&(client->dev));
 
+	cancel_delayed_work_sync(&info->water_wd_work);
 	fts_proc_remove();
 	/* sysfs stuff */
 	sysfs_remove_group(&client->dev.kobj, &info->attrs);

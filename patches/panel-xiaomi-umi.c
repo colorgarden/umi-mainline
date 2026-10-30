@@ -95,6 +95,12 @@ struct umi_panel {
 
 struct mipi_dsi_device *dsi;
 	struct gpio_desc *reset_gpio;
+	/*
+	 * 面板刷新率选择脚（tlmm 50，厂商 DT 叫 disprate-gpios）。
+	 * ABL 通常已经把它拉高（=90 Hz 自刷新），但 panel 复位/unprepare 之后
+	 * 不该指望 bootloader 的状态还在，所以 prepare 时再拉高一次。
+	 */
+	struct gpio_desc *disprate_gpio;
 	struct regulator_bulk_data *supplies;
 	int num_supplies;
 	struct backlight_device *bl;
@@ -401,6 +407,15 @@ static int umi_panel_prepare(struct drm_panel *panel)
 				 ctx->cfg.on_seq, ctx->cfg.on_seq_len);
 	if (ret)
 		goto err_off;
+
+	/*
+	 * 厂商在 on-sequence 之后再等 ~128 ms 才把 disprate 拉高；这里保守用
+	 * 20 ms（这块屏的 off/on 已经验证过不会丢 DCS，拉高只是选择自刷新档位）。
+	 */
+	if (ctx->disprate_gpio) {
+		msleep(20);
+		gpiod_set_value_cansleep(ctx->disprate_gpio, 1);
+	}
 
 	return 0;
 
@@ -832,6 +847,17 @@ static int umi_panel_probe(struct mipi_dsi_device *dsi)
 	else
 		dev_warn(&dsi->dev,
 			 "reset-gpios unavailable (GPIO12 in TLMM NORTH tile), will skip sleep-in\n");
+
+	/* 刷新率选择脚同样是可选的（能用就用，不能就沿用 ABL 留下的电平） */
+	ctx->disprate_gpio = devm_gpiod_get_optional(&dsi->dev, "disprate",
+						     GPIOD_OUT_HIGH);
+	if (IS_ERR(ctx->disprate_gpio)) {
+		dev_warn(&dsi->dev, "no disprate-gpios (%ld), keeping bootloader state\n",
+			 PTR_ERR(ctx->disprate_gpio));
+		ctx->disprate_gpio = NULL;
+	}
+	if (ctx->disprate_gpio)
+		dev_info(&dsi->dev, "disprate-gpios acquired (high = 90 Hz self-scan)\n");
 
 	/*
 	 * ★ 只按名字取已有的轨，**不设任何电压**。

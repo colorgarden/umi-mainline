@@ -36,16 +36,26 @@
 		xiaomi,bl-type = "bl_ctrl_dcs";
 		xiaomi,bl-min = <0x01>;
 		xiaomi,bl-max = <0x7ff>;
-		xiaomi,framerate = <0x3c>;
+		/*
+		 * 90 Hz（厂商原生时序）。以前这里写 0x3c(60) 并配 600/32/560 的
+		 * 巨大 vblank，实测「触控不跟手」的主因之一就在这：面板被 ABL
+		 * 留在 90 Hz 自刷新（tlmm 50 = 1），而 DSI 按 60 Hz 推帧，帧会被
+		 * 面板多保持半帧到一帧，滑动看起来就慢半拍。
+		 * 厂商时序：H 16/8/8, V 4/4/8 -> 1112x2356@90，像素时钟不变
+		 * (235.8 MHz)，所以 DSI 位率不用动。
+		 */
+		xiaomi,framerate = <0x5a>;
+		/* 面板刷新率选择脚，ABL 已拉高(=90 Hz)，这里只做记录 */
+		disprate-gpios = <&tlmm 50 0>;
 		xiaomi,panel-width = <0x438>;
 		xiaomi,panel-height = <0x924>;
 		xiaomi,h-front-porch = <0x10>;
 		xiaomi,h-back-porch = <0x08>;
 		xiaomi,h-pulse-width = <0x08>;
 		xiaomi,h-sync-skew = <0x00>;
-		xiaomi,v-back-porch = <0x230>;
-		xiaomi,v-front-porch = <0x258>;
-		xiaomi,v-pulse-width = <0x20>;
+		xiaomi,v-back-porch = <0x08>;
+		xiaomi,v-front-porch = <0x04>;
+		xiaomi,v-pulse-width = <0x04>;
 		xiaomi,clockrate = <0x28a67e80>;
 		xiaomi,on-seq = /bits/ 8 <0x39 0x01 0x00 0x00 0x00 0x00 0x06 0xf0 0x55 0xaa 0x52 0x08 0x07 0x15 0x01 0x00
 			0x00 0x00 0x00 0x02 0xc0 0x10 0x39 0x01 0x00 0x00 0x00 0x00 0x06 0xf0 0x55 0xaa

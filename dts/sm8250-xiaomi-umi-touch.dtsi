@@ -206,7 +206,15 @@
 		fts,reset-gpio = <&tlmm 38 GPIO_ACTIVE_HIGH>;
 		reset-gpios = <&tlmm 38 GPIO_ACTIVE_HIGH>;
 		fts,reset-gpio-name = "fts_rst";
-		fts,irq-flags = <8>;		/* IRQF_TRIGGER_LOW */
+		/*
+		 * 厂商 stfts 驱动把这个值直接喂给 request_threaded_irq(…, NULL,
+		 * handler, flags, …)。主线程为 NULL 时**必须带 IRQF_ONESHOT**，
+		 * 否则内核返回 -EINVAL，驱动只打一句 "Request irq failed" 就整个
+		 * probe 失败。厂商 DT 用的是 0x2008 = IRQF_ONESHOT |
+		 * IRQF_TRIGGER_LOW，照抄。
+		 *（fts521 不看这个属性，改了对它没影响。）
+		 */
+		fts,irq-flags = <0x2008>;	/* IRQF_ONESHOT | IRQF_TRIGGER_LOW */
 
 		fts,x-max = <1080>;
 		fts,y-max = <2340>;

@@ -114,11 +114,13 @@ grep -q 'fts-umi' "$FTS_MK" || \
 	printf 'obj-$(CONFIG_TOUCHSCREEN_FTS_UMI)\t+= fts-umi.o\n' >> "$FTS_MK"
 
 # ---- 触摸驱动选择 ----
-#   TOUCH=fts521 （默认）主线移植版，走标准 i2c_transfer + umi-i2c 适配器
-#   TOUCH=stfts        厂商 5.2.4 驱动，取自 zhaoyuanwang123/armbian 的
+#   默认用**厂商 5.2.4 驱动**（stfts）—— 主线移植版 fts521 的“空闲不跟手”
+#   在驱动层改了两轮都没根治，直接换厂商代码。
+#   TOUCH=fts521       回退到主线移植版（走标准 i2c_transfer + umi-i2c 适配器）
+#   TOUCH=stfts        厂商驱动，取自 zhaoyuanwang123/armbian 的
 #                      patch/kernel/archive/sm8250-7.2/0043-…patch
 #                      （带 FW_UPDATE_ON_PROBE / PRE_SAVED_METHOD / FOD）
-TOUCH_SEL=${TOUCH:-fts521}
+TOUCH_SEL=${TOUCH:-stfts}
 echo "   touch driver: $TOUCH_SEL"
 
 if [ "$TOUCH_SEL" = stfts ]; then
@@ -335,7 +337,7 @@ check_y DRM_PANEL_XIAOMI_UMI
 #   TOUCH=fts521（默认）主线移植版，走标准 i2c_transfer
 #   TOUCH=stfts         厂商 5.2.4 驱动（取自 zhaoyuanwang123/armbian 的
 #                       sm8250-7.2 补丁 0043），带 FW_UPDATE_ON_PROBE/FOD
-if [ "${TOUCH:-fts521}" = stfts ]; then
+if [ "${TOUCH_SEL:-stfts}" = stfts ]; then
 	check_y TOUCHSCREEN_ST_FTS
 else
 	check_y I2C_UMI_BITBANG

@@ -171,7 +171,84 @@ ssh root@PHONE 'sh /root/umi-plasma.sh --apply'
 
 （不带 `--apply` 只打印要做什么。）
 
-## 8. 还没做的
+## 8. 中文界面：zh_CN + MiSans + 等宽终端
+
+一键：`scripts/umi-zh.sh --apply`（幂等，可反复跑）。四个坑：
+
+1. **只改 `LANG` 不够**。`zh_CN.UTF-8` 必须先在 `/etc/locale.gen` 里取消注释再
+   `locale-gen` 真生成，否则 Qt 拿到的是 `C`，界面照样英文。验证：
+   `locale -a | grep zh` → `zh_CN.utf8`。
+2. **`/etc/locale.conf` 只对之后启动的单元生效**。已经跑着的 `getty@tty1` 不会重读，
+   所以要么 `systemctl set-environment LANG=zh_CN.UTF-8`，要么在 `~/.bash_profile`
+   里 `export LANG`。查会话环境：
+
+   ```sh
+   tr '\0' '\n' < /proc/$(pgrep -f /usr/bin/plasmashell | head -1)/environ | grep LANG
+   ```
+
+3. **缺 CJK 字体就是豆腐块**。`plasma-mobile` 的 340 个 `zh_CN/*.mo` 本来就在，
+   缺的只有字体：`pacman -S noto-fonts-cjk`。
+4. **MiSans 的权重元数据是错的**（`@fontpkg/mi-sans` 的 OTF：Regular=53、
+   Medium=75）。不改的话 fontconfig 会把 Medium 当常规，整个界面变中黑字。
+   用 `match target="scan"` 按 style 名重设 weight（`66-umi-misans-weight.conf`）。
+
+字体落地（官方整包 `MiSans_Global_ALL.zip` 太大，unpkg 上这套单字重 OTF 够用）：
+
+```sh
+mkdir -p /usr/share/fonts/misans
+curl -L https://unpkg.com/@fontpkg/mi-sans@4.3.0/MiSans-Regular.otf \
+	-o /usr/share/fonts/misans/MiSans-Regular.otf
+fc-cache -f
+fc-match 'sans-serif:lang=zh-cn'    # 期望 MiSans-Regular.otf
+```
+
+`/etc/fonts/conf.d/65-umi-misans.conf`：`zh` 的 `sans-serif` 前置 `MiSans`，再弱回落
+`Noto Sans CJK SC`（MiSans 缺的生僻字）。
+
+### 终端（Konsole）
+
+- MiSans **不是等宽字体**，设成 `fixed` 后终端里英文间距会拉得很开。等宽必须真等宽：
+  `kdeglobals` 的 `fixed=Hack,9`，Konsole 自己的 profile 用 `Font=Hack,8`
+  （8pt，一屏行数更多），中文照样回落 MiSans。
+- 想再小/再大：Konsole 里 `Ctrl+-` 缩小、`Ctrl+0` 复位，或直接改
+  `~/.local/share/konsole/Mobile.profile` 的 `Font=`。
+- **终端单独切语言**：Konsole 没有独立语言开关，但可以只给它的启动项套环境 ——
+  `~/.local/share/applications/org.kde.konsole.desktop` 里写
+  `Exec=env LANG=en_US.UTF-8 LANGUAGE=en konsole`，桌面其它部分仍然是中文。
+
+### 虚拟键盘（plasma-keyboard）
+
+键盘语言不是跟着 `LANG` 走的：`~/.config/plasmakeyboardrc`
+
+```ini
+[General]
+enabledLocales=en_US
+```
+
+`plasma-keyboard` 里的逻辑是「`enabledLocales` 空 → `activeLocales = [当前系统语言]`」，
+所以中文机器上默认只有拼音键盘、没有英文。
+
+**别图省事写成 `en_US,zh_CN`**：Qt Virtual Keyboard 的拼音插件
+（`Plugins/Pinyin/libqtvkbpinyinplugin.so`）是有的，但 `/usr/share/qt6/virtualkeyboard`
+那套词典数据没装，`zh_CN` 会被判成不可用 locale，结果是**键盘整个不显示**
+（journal 里只有一句 `Input method is trying to show itself but without a context`）。
+真要中文输入得先补词典，或者走 fcitx5 + qt6 IM module。
+
+配套：
+
+- `pacman -S hunspell-en_US`：英文候选词/纠错，缺了只 warning，不影响出键盘
+- `kwinrc` 里 `[Wayland] InputMethod=/usr/bin/plasma-keyboard`：让 KWin 自己拉起键盘面板
+- 键盘是按需启动的；改了配置要么重开一次会话，要么点一个输入框让它重启
+
+### 锁屏 PIN
+
+Plasma Mobile 的锁屏走 `kscreenlocker` + PAM，**认的就是账户密码**，没有单独的 PIN
+（`/etc/pam.d/` 下没有 `kscreenlocker` 条目 → 用默认 `system-login`）。所以：
+
+- PIN = `colorgarden` 的登录密码（本机是纯数字，正好能打在数字键盘上）
+- 想改：`passwd colorgarden`；改完锁屏、sudo、SSH 一起变
+
+## 9. 还没做的
 
 - 没有虚拟键盘自动弹出（`plasma-keyboard` 已装，但 Plasma Mobile 的输入法面板
   要在设置里挑一次；触摸-only 时建议先开“显示虚拟键盘”）

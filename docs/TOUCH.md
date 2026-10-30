@@ -1261,3 +1261,64 @@ static void fts_idle_time_work(struct work_struct *work)
 不发命令            ->  0
 延迟 3 秒发 0xFF     -> 27
 ```
+
+## 16. 2026-10-30：触摸「用几分钟就彻底没了」＝固件卡死在水模式（已加看门狗）
+
+### 16.1 现场
+
+一次完整失效窗口（60 秒）里：
+
+| 指标 | 值 |
+|---|---|
+| 触摸 IRQ 增量 | +324 |
+| 其中 `EVT_TYPE_STATUS_WATER` | +324 |
+| 触摸事件（ENTER/MOTION） | 0 |
+
+固件在 `Enter Water mode` / `Exit Water mode` 之间每约 300 ms 跳一次，这期间
+**一个触摸上报都没有**；而 kernel 侧完全静默：`Sense ON`、i2c 正常、
+`/proc/interrupts` 计数照涨、dmesg 无任何错误。所以只看驱动日志根本发现不了，
+必须把「中断增量」和「evtest 事件数」放一起比。
+
+### 16.2 不用重启的复位手法
+
+驱动自带诊断节点 `/proc/fts/driver_test`（文本模式），`0x51` = `CMD_INITTEST`，
+参数是 init 类型（`0x02` = panel init，`0x03` = full panel init）：
+
+```sh
+printf '51 02' > /proc/fts/driver_test
+```
+
+效果（实测）：
+
+```
+INITIALIZATION Production test is starting,type:2
+System reset DONE!
+FW VER = 0132 / SVN 5072 / CONFIG VER = 004C / AFE 05-05-05
+```
+
+之后水模式事件立刻归零、触摸恢复 —— 这就是恢复路径背后的“API”。
+
+### 16.3 判据与看门狗
+
+关键观察：**正常使用期间水模式事件恒为 0**（上一版 boot 里前 470 秒一个都没有，
+之后突然每秒约 5 个）。所以阈值可以压得很低：
+
+- 每 **1 秒**比较一次 `water_wd_events` / `water_wd_touch`
+- 1 秒内水模式事件 ≥ 2 且触摸事件 = 0 → 判定固件抽风
+- 动作：`production_test_initialization(SPECIAL_PANEL_INIT)` + `fts_init_sensing(info)`
+- 10 秒冷却，防止真进水/手上有水时变成复位死循环
+- dmesg 打一行：`water-mode latch (water +N, touch +0) -> sysreset + panel init`
+
+逐条的水模式日志已降到 `logError(0)`（只有 `DEBUG` 才打印），否则每秒 5 条会把
+dmesg 刷满、把别的日志挤掉。
+
+统计点：`fts_event_handler()` 里 `eventId == EVT_ID_ENTER_POINT >> 4 ||
+EVT_ID_MOTION_POINT >> 4` 记触摸；`EVT_TYPE_STATUS_WATER` 分支记水模式。
+注意 `install_handler(info, ENTER_POINT, ...)` 里的 `ENTER_POINT` 只用于 token paste，
+不是独立标识符，直接写会编译失败（踩过）。
+
+### 16.4 还没做的（固件级）
+
+水模式是 FW 自己的算法，驱动只能复位它、没法真的关掉。要“删掉”得改 FW 配置
+（`st_fts_j2_2.ftb` 里的 wet-detection 参数）再写回 flash —— 有把 CX 写坏的前科，
+暂不动。当前方案的代价只是失效瞬间一次约 0.5 s 的复位空白。

@@ -311,6 +311,24 @@ struct fts_ts_info {
 	struct regulator *avdd_reg;
 
 	int resume_bit;
+
+	/*
+	 * water-mode 看门狗
+	 * -----------------
+	 * 这块屏上的固件偶尔会卡在 Enter/Exit Water mode 里反复横跳（实测每
+	 * ~300 ms 一对、每秒约 4~5 个状态事件），这时它**一个触摸事件都不再
+	 * 上报**，触摸看起来就是“用几分钟后彻底没反应”，只有 sysreset +
+	 * panel init 能解开（reboot 也能，但没必要）。
+	 *
+	 * 这里分别统计“水模式状态事件”和“触摸事件”，由 fts_water_wd_work()
+	 * 每 3 秒比一次：水事件很多而触摸事件为 0，就认为固件卡住了。
+	 */
+	struct delayed_work water_wd_work;
+	atomic_t water_wd_events;
+	atomic_t water_wd_touch;
+	int water_wd_last_water;
+	int water_wd_last_touch;
+	unsigned long water_wd_last_reset;
 	int fwupdate_stat;
 
 	struct notifier_block notifier;
