@@ -1208,3 +1208,56 @@ python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi-wifi.dtb --name stfts
 （比任何 .ftb 文件都新），理论上不会烧；但如果不幸触发，`fts_fw_download`
 失败可能把芯片留在 bootloader —— 真出问题就 `echo 256 > fwupdate`（blind
 flash）救，命令见 §11。
+
+## 15. "按一会才跟手"：FW idle 时间 + 发送时机（已修）
+
+前情：屏幕静止一阵之后，第一下/极短的点击接不住，要"按一会"才跟手。原因是芯片
+空闲时会降扫描率，而主线的 fts521 从来没给芯片设过"进入 idle 的时间"。
+
+厂商驱动用的是原始 FW 命令（`fts_update_enter_idle_time()`）：
+
+```
+C0 00 00 xx     进入 idle 的时间 = xx * 50 ms
+C0 0A 00/01     关 / 开"动态扫描频率切换"
+```
+
+我们要的是 **0xFF = 12.75 s**（厂商 DT 的 `fts,touch-idletime-def` 就是 12450 ms，
+除以 50）。
+
+### 15.1 关键是发送时机（踩了两次）
+
+| 做法 | 结果 |
+|---|---|
+| 不发 | 静置 20 s 后极短按 10 下 → **0** 次中断（这就是"按一会才跟手"） |
+| **在 `fts_init_sensing` 里、sense-on 之后紧接着发**（还带 `C0 0A 01`） | **触摸直接不响应**，IRQ 冻结，只有 `system_reset` 能救 |
+| 只发 `C0 00 00 FF`，仍在 init 里紧接着发 | 同样把触摸打死 |
+| **延迟 3 秒**（`delayed_work`）再发 | **27** 次中断，触摸正常且空闲后第一下就能接住 |
+
+所以 `fts521/fts.c` 里的最终写法是：
+
+```c
+static void fts_idle_time_work(struct work_struct *work)
+{
+	struct fts_ts_info *info = container_of(work, struct fts_ts_info,
+						idle_work.work);
+	u8 idle_time[4] = { 0xC0, 0x00, 0x00, 0xFF };
+	int ret = fts_write(idle_time, sizeof(idle_time));
+
+	logError(1, "%s %s: idle-time set to 12.75s (%d)\n", tag, __func__, ret);
+}
+...
+	/* fts_init_sensing(): 先让芯片正常扫起来，3 秒后再改 idle 参数 */
+	schedule_delayed_work(&info->idle_work, msecs_to_jiffies(3000));
+```
+
+`C0 0A xx`（动态扫描频率切换）**没有加**：它风险最大，配合起来会让芯片停止上报。
+
+### 15.2 验证
+
+`tmp/test-idle3.sh`：静置 20 s → 背光灭一下当信号 → 10 s 内极短按 10 下 → 看
+`/proc/interrupts` 的 `fts` 增量。
+
+```
+不发命令            ->  0
+延迟 3 秒发 0xFF     -> 27
+```

@@ -220,6 +220,12 @@ struct fts_ts_info {
 
 	struct work_struct suspend_work; /* /< Suspend work thread */
 	struct work_struct resume_work; /* /< Resume work thread */
+	/*
+	 * umi: 初始化之后延迟几秒再给芯片发 "进入 idle 的时间" 那条 FW 命令。
+	 * 在 init 序列里紧接着 sense-on 发会让触摸直接不响应（IRQ 冻结），
+	 * 等芯片真正扫起来之后再发就没事（见 fts.c 里 fts_idle_time_work）。
+	 */
+	struct delayed_work idle_work;
 	struct workqueue_struct *event_wq; /* /< Workqueue used for event
 						 * handler, suspend and resume
 						 * work threads */

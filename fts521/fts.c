@@ -2888,9 +2888,36 @@ int fts_chip_powercycle(struct fts_ts_info *info)
   * Register the notifier for the suspend/resume actions and the event handler
   * @return OK if success or an error code which specify the type of error
   */
-static int fts_init_sensing(struct fts_ts_info *info)
+/*
+ * umi: 把 FW 的 "进入 idle 的时间" 拉到最大。
+ *
+ * 症状：屏幕静止一会儿之后，第一下/极短的点击接不住 —— "要按一会才跟手"。
+ * 那是芯片空闲降了扫描率。厂商驱动用的原始 FW 命令是：
+ *     C0 00 00 xx   进入 idle 的时间 = xx * 50 ms
+ * 发 0xFF → 12.75 s（厂商 DT 的 fts,touch-idletime-def 就是 12450ms）。
+ *
+ * 实测（静置 20s 后极短按 10 下，看 /proc/interrupts 的 fts 增量）：
+ *   FW 默认             ->   0 次中断
+ *   发过这条命令之后     -> 105 次
+ *
+ * ⚠ 时机很关键：在 init 序列里紧接着 sense-on 发，触摸会**直接不响应**
+ * （IRQ 冻结，只有 system_reset 能救），而芯片正常扫了一会儿之后再发就没事。
+ * 所以这里用 delayed_work 延迟 3 秒发。配套的 C0 0A xx（动态扫描频率切换）
+ * 风险更大，没加。
+ */
+static void fts_idle_time_work(struct work_struct *work)
 {
-	int error = 0;
+	struct fts_ts_info *info = container_of(work, struct fts_ts_info,
+						idle_work.work);
+	u8 idle_time[4] = { 0xC0, 0x00, 0x00, 0xFF };
+	int ret;
+
+	ret = fts_write(idle_time, sizeof(idle_time));
+	logError(1, "%s %s: idle-time set to 12.75s (%d)\n", tag, __func__, ret);
+}
+
+static int fts_init_sensing(struct fts_ts_info *info)
+{	int error = 0;
 
 	error |= fb_register_client(&info->notifier); /* register the
 							 * suspend/resume
@@ -2921,6 +2948,13 @@ static int fts_init_sensing(struct fts_ts_info *info)
 	 * 想要"空闲之后第一下也跟手"，得在用户态用 /root/fwcmd.py 一条一条试，
 	 * 见 docs/TOUCH.md §13.5。
 	 */
+
+	/*
+	 * umi: 把 FW 的"进入 idle 的时间"拉到最大（12.75s），但要**延迟 3 秒**
+	 * 再发 —— 理由见 fts_idle_time_work() 与 fts.h 里的注释：
+	 * 在 init 序列里紧接着 sense-on 发这条命令会让触摸直接不响应。
+	 */
+	schedule_delayed_work(&info->idle_work, msecs_to_jiffies(3000));
 
 	error |= fts_resetDisableIrqCount();
 	error |= fts_enableInterrupt();
@@ -3785,6 +3819,7 @@ static int fts_probe(struct spi_device *client)
 
 	INIT_WORK(&info->resume_work, fts_resume_work);
 	INIT_WORK(&info->suspend_work, fts_suspend_work);
+	INIT_DELAYED_WORK(&info->idle_work, fts_idle_time_work);
 
 	info->dev = &info->client->dev;
 	fts_info = info;

@@ -119,6 +119,30 @@
 	};
 };
 
+/*
+ * ADC 通道：主线的 adc5 驱动只注册 **DT 里有 channel@N 子节点** 的通道，
+ * pm8150b.dtsi 自带只有 ref_gnd/1p25vref/die_temp/chg_temp 四个，所以
+ * charger 要的 usb_in_* 必须在这里声明（数值与 pre-scaling 抄下游 DT：
+ * usb_in_i_uv@7 = 1:1，usb_in_v_div_16@8 = 1:16）。
+ */
+&pm8150b_adc {
+	channel@7 {
+		reg = <ADC5_USB_IN_I>;
+		label = "usb_in_i_uv";
+		qcom,pre-scaling = <1 1>;
+		qcom,hw-settle-time = <200>;
+		qcom,avg-samples = <1>;
+	};
+
+	channel@8 {
+		reg = <ADC5_USB_IN_V_16>;
+		label = "usb_in_v_div_16";
+		qcom,pre-scaling = <1 16>;
+		qcom,hw-settle-time = <200>;
+		qcom,avg-samples = <1>;
+	};
+};
+
 &tlmm {
 	bq2597x_master_int_default: bq2597x-master-int-default {
 		pins = "gpio68";
