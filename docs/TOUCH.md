@@ -1322,3 +1322,70 @@ EVT_ID_MOTION_POINT >> 4` 记触摸；`EVT_TYPE_STATUS_WATER` 分支记水模式
 水模式是 FW 自己的算法，驱动只能复位它、没法真的关掉。要“删掉”得改 FW 配置
 （`st_fts_j2_2.ftb` 里的 wet-detection 参数）再写回 flash —— 有把 CX 写坏的前科，
 暂不动。当前方案的代价只是失效瞬间一次约 0.5 s 的复位空白。
+
+## 17. 2026-10-31 定案：真正的原因是——开机没做 full panel init（CX 是废的）
+
+### 17.1 结论
+
+厂商驱动在 `fts_fw_update()` 里按三个 AFE 版本决定要不要做面板初始化：
+
+```
+CFG = 05   CX = 05   PANEL = 05      → 三者相等 → init_type = NO_INIT
+```
+
+于是**开机完全不做面板初始化**，直接 `fts_init_sensing()`。但本机芯片里存的 CX
+是无效的（`CX VER = FFFF`），FW 拿错误的补偿数据去算自容，结果是：
+
+```
+[ FTS ] SS negative detect Force cal = 11 00 00 00 00 00   （每分钟好几次）
+[ FTS ] Force cal = 35 00 00 00 00 00
+```
+
+自容读数为负 → 强制校准 → 校准期间不上报 → 最后**彻底停止上报**。用户侧就是
+“前几分钟还挺好，后面直接没触摸”。
+
+### 17.2 修法（一行逻辑）
+
+`stfts/fts.c` 的 `fts_fw_update()` 里，当默认逻辑判成 `NO_INIT` 时强制走一次
+full panel init：
+
+```c
+if (init_type == NO_INIT) {
+	init_type = SPECIAL_FULL_PANEL_INIT;
+	logError(1, "%s %s: forcing FULL panel init (stored CX invalid on this unit)\n",
+		 tag, __func__);
+}
+```
+
+这样就落到既有的 `fts_chip_initialization(info, SPECIAL_FULL_PANEL_INIT)` →
+`fts_init_sensing()` 的序列里，开机日志：
+
+```
+[ FTS ] forcing FULL panel init (stored CX invalid on this unit)
+[ FTS ] AFE VER: CFG = 05 - CX = 05 - PANEL = 05
+[ FTS ] Interrupt Enabled!
+```
+
+**每次 probe 只做一次**：同一 boot 内做两次 full init 会把 DSI 卡住（见 §7）。
+所以看门狗的复位路径只做 `sysreset + mode_handler + enableInterrupt`，不含 panel init。
+
+### 17.3 效果（实测）
+
+修复前后对比（同一台机器、同样用法）：
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| `SS negative detect` | 每分钟好几个，持续增长 | **0**（10 分钟监控里一条都没有）|
+| `Force cal` | 持续增长 | 只有开机初始化那 2 条 |
+| 触摸 | 几分钟后彻底停摆 | 稳定 |
+
+### 17.4 之前两个“修复”其实是弯路（但代码保留）
+
+1. **水模式看门狗**：确实抓到过固件卡在 `Enter/Exit Water mode` 反复横跳、60 秒
+   324 个中断全是它、触摸 0 个的现场，所以逻辑保留 —— 但那是**症状**，不是本因。
+2. **IRQ 自愈**（`IRQ left disabled -> re-enabling`）：捕获 `fts_system_reset()`
+   里 `disable_irq_nosync()` 之后没有配对 `enable_irq()` 的残留状态。这条是真实
+   存在的独立 bug（手册式复位/`/proc/fts/driver_test` 的 `51 02` 都会踩），保留。
+
+教训：**先看固件自检事件（`SS negative` / `Force cal` / `Water mode`）的频率**，
+比盯 IRQ 计数更快定位到“AFE 数据不对”这一类问题。

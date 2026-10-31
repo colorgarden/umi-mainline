@@ -370,9 +370,16 @@ check_v ARM64_VA_BITS 48
 check_v CMDLINE_FORCE y
 check_v INITRAMFS_SOURCE '""'
 check_v LOG_BUF_SHIFT 21
-if [ "$RUST_OK" = 1 ]; then
+if [ "$RUST_OK" = 1 ] && [ "$(cfgval RUST)" = "y" ]; then
 	check_y RUST
-	check_y DRM_PANIC_SCREEN_QR_CODE
+fi
+# 6.12 里 DRM_PANIC_SCREEN 是字符串选择（"qr_code"），没有 DRM_PANIC_SCREEN_QR_CODE
+# 这个符号；panic 屏必须保持二维码，所以这里直接判字符串。
+_panic=$(sed -n 's/^CONFIG_DRM_PANIC_SCREEN="\(.*\)"$/\1/p' "$OUT/.config" | tail -1)
+if [ "$_panic" = "qr_code" ]; then
+	echo "   OK   DRM_PANIC_SCREEN=qr_code"
+else
+	echo "   FAIL DRM_PANIC_SCREEN=$_panic（必须是 qr_code）"; fail=1
 fi
 check_y FONT_TER16x32
 echo "   PANIC_SCREEN: $(sed -n 's/^CONFIG_DRM_PANIC_SCREEN="\(.*\)"$/\1/p' "$OUT/.config" | tail -1)"

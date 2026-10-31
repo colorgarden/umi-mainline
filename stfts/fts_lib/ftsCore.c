@@ -805,7 +805,7 @@ int fts_disableInterruptNoSync(void)
 		logError(0, "%s Number of disable = %d \n", tag,
 			 disable_irq_count);
 		if (disable_irq_count == 0) {
-			logError(0, "%s Executing Disable... \n", tag);
+			logError(1, "%s Executing Disable... (IRQ held off)\n", tag);
 			disable_irq_nosync(getClient()->irq);
 			disable_irq_count++;
 		}
@@ -818,6 +818,16 @@ int fts_disableInterruptNoSync(void)
 			 tag, __func__, ERROR_OP_NOT_ALLOW);
 		return ERROR_OP_NOT_ALLOW;
 	}
+}
+
+/*
+ * 给 fts.c 的看门狗用：现在内核侧的 IRQ 是不是被压着（disable_irq 过但没配对
+ * enable）。死机现场是「gpio39 一直低（固件有事件待读）+ /proc/interrupts 不涨 +
+ * spurious=0 + irq/183-fts 线程好好睡着」，也就是 IRQ 被 disable 了。
+ */
+int fts_is_interrupt_disabled(void)
+{
+	return disable_irq_count > 0;
 }
 
 /**

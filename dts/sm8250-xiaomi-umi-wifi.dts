@@ -216,7 +216,7 @@
 		 *
 		 * 换 MAC 时只改这一行，然后重打包 boot.img。
 		 */
-		local-mac-address = [00 03 7f 12 a4 a4];
+		local-mac-address = [a6 d7 9d 78 3d cb];
 
 		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
 		vddaon-supply = <&vreg_pmu_aon_0p59>;

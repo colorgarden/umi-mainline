@@ -171,6 +171,7 @@ int fts_disableInterrupt(void);
 int fts_disableInterruptNoSync(void);
 int fts_resetDisableIrqCount(void);
 int fts_enableInterrupt(void);
+int fts_is_interrupt_disabled(void);
 int fts_crc_check(void);
 int requestSyncFrame(u8 type);
 int calculateCRC8(u8 *u8_srcBuff, int size, u8 *crc);

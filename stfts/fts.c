@@ -4145,14 +4145,42 @@ static void fts_water_wd_work(struct work_struct *work)
 	info->water_wd_last_water = water;
 	info->water_wd_last_touch = touch;
 
+	/*
+	 * 失效模式二：IRQ 被压着没配对 enable。
+	 *
+	 * 现场：gpio39 一直低（固件有事件待读）、/proc/interrupts 不涨、
+	 * spurious=0、irq/183-fts 线程安安静静睡着 —— 也就是 disable_irq()
+	 * 过、但配对的 enable_irq() 没执行。fts_system_reset() 内部会
+	 * fts_disableInterruptNoSync()，如果复位之后某步失败/或者调用者忘了
+	 * 调 fts_enableInterrupt()，IRQ 就再也不上天了。
+	 *
+	 * 这里只要发现“屏幕亮着、不在复位过程中、却还压着 IRQ”，直接
+	 * fts_enableInterrupt() 把它放出来：电平触发的中断会立刻进来，
+	 * 处理函数把 FIFO 读空，触摸当场恢复（不用 reset，不掉帧）。
+	 */
+	if (info->resume_bit && !atomic_read(&info->system_is_resetting) &&
+	    fts_is_interrupt_disabled()) {
+		logError(1, "%s %s: IRQ left disabled -> re-enabling\n",
+			 tag, __func__);
+		fts_enableInterrupt();
+	}
+
 	if (info->resume_bit && dwater >= 2 && dtouch == 0 &&
 	    time_after(jiffies, info->water_wd_last_reset + 10 * HZ)) {
 		logError(1,
-			 "%s %s: water-mode latch (water +%d, touch +%d) -> sysreset + panel init\n",
+			 "%s %s: water-mode latch (water +%d, touch +%d) -> sysreset + sense on\n",
 			 tag, __func__, dwater, dtouch);
 		info->water_wd_last_reset = jiffies;
-		production_test_initialization(SPECIAL_PANEL_INIT);
-		fts_init_sensing(info);
+		/*
+		 * 复位的正确姿势（抄 ESD 错误处理那条路，别抄 proc 的
+		 * production_test_initialization：那条路复位完不会把内核 IRQ
+		 * 放回来，而且 fts_init_sensing() 会再 request_threaded_irq
+		 * 一次，第二次必然 -EBUSY，结果就是“复位完彻底没触摸”）。
+		 */
+		release_all_touches(info);
+		fts_system_reset();
+		fts_mode_handler(info, 0);
+		fts_enableInterrupt();
 	}
 
 	schedule_delayed_work(&info->water_wd_work, msecs_to_jiffies(1000));
@@ -4359,6 +4387,26 @@ static int fts_fw_update(struct fts_ts_info *info, const char *fw_name, int forc
 		} else {
 			init_type = NO_INIT;
 		}
+	}
+
+	/*
+	 * 本机实测：芯片里存的 CX 是无效的（CX VER = FFFF），而 AFE 只有在
+	 * 按当前面板重建一次之后才稳定。默认逻辑在这里会走 NO_INIT
+	 * （cfg/cx/panel 三个 AFE 版本都是 05，看起来“不用重建”），于是 FW
+	 * 用一个不匹配的面板模型去算自容，几分钟后就开始刷
+	 *   SS negative detect Force cal = 11 ...
+	 * （自容读数为负），接着彻底停止上报触摸。
+	 *
+	 * 主线移植那版驱动里早就验证过：FULL panel init（0xA4 00 03）才是
+	 * “AFE 真的出数据”的那条路（docs/TOUCH.md §2/§6）。厂商驱动默认不走，
+	 * 这里强制走一次——每次 probe 只做一次，DNS 不会被打两遍
+	 * （同一 boot 内做两次 full init 会把 DSI 卡住，见 docs/TOUCH.md §7）。
+	 */
+	if (init_type == NO_INIT) {
+		init_type = SPECIAL_FULL_PANEL_INIT;
+		logError(1,
+			 "%s %s: forcing FULL panel init (stored CX invalid on this unit)\n",
+			 tag, __func__);
 	}
 
 	if (init_type != NO_INIT) {
