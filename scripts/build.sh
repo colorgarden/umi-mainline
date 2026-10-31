@@ -456,6 +456,19 @@ for p in "$OUT/arch/arm64/boot/Image.gz" \
 	[ -s "$p" ] || { echo "!! 编译失败：缺少 $p（完整日志 $OUT/build.log）"; exit 3; }
 done
 
+# ---- [5.5/6] 模块：编出来并装到 out/modroot（手机上那份 .ko 是旧构建，
+#      ABI 早就对不上了：modprobe hci_uart -> Exec format error、
+#      rfkill/pwrseq 还会和内建符号冲突）。tools/push-modules.sh 负责推过去。
+if [ "${MODULES:-1}" != "0" ]; then
+	echo "== [5.5/6] 编译模块并装到 out/modroot"
+	( make -C "$TREE" $MAKEFLAGS_TC O="$OUT" -j"$JOBS" modules ) >> "$OUT/build.log" 2>&1 || \
+		echo "   !! modules 编译有问题（继续，至少内核本体是好的，见 $OUT/build.log）"
+	rm -rf "$WS/out/modroot"
+	( make -C "$TREE" $MAKEFLAGS_TC O="$OUT" \
+		INSTALL_MOD_PATH="$WS/out/modroot" modules_install ) >> "$OUT/build.log" 2>&1 || true
+	echo "   modules: $(find "$WS/out/modroot" -name '*.ko' 2>/dev/null | wc -l) 个 .ko"
+fi
+
 echo "== [6/6] 收集产物到 $WS/out"
 cp -f "$OUT/arch/arm64/boot/Image.gz"      "$WS/out/Image.gz"
 cp -f "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi.dtb"      "$WS/out/sm8250-xiaomi-umi.dtb"
