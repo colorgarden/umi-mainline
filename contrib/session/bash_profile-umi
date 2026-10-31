@@ -1,0 +1,28 @@
+# ~/.bash_profile  —— Xiaomi Mi 10 (umi) 的 tty1 自动启动会话
+#
+# 机制：/etc/systemd/system/getty@tty1.service.d/autologin.conf 让 tty1 直接
+# 以 colorgarden 登录，登录 shell 读这个文件，最后 exec 一个 Wayland 会话。
+# 所以「换桌面」= 改这里的 exec 一行，不需要 display manager。
+#
+# 现在用 Phosh（phoc 合成器 + gnome-session）。想回 Plasma Mobile，把 exec
+# 换回最后注释掉的第二行即可。
+
+# UMI_LANG: systemd 只会把 locale.conf 给新起的单元，这里自己兜底
+export LANG=zh_CN.UTF-8
+export LANGUAGE=zh_CN
+
+# Phosh 需要的一些环境（phosh-session 自己会补一部分，这里显式给更稳）
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=Phosh:GNOME
+export MOZ_ENABLE_WAYLAND=1
+
+if [ -z "${WAYLAND_DISPLAY}" ] && [ "${XDG_VTNR}" = "1" ]; then
+	# 兜底：上次会话如果崩了留下 lock，先清掉
+	rm -f "${XDG_RUNTIME_DIR}/wayland-1.lock" 2>/dev/null
+
+	# ① Phosh
+	exec /usr/bin/phosh-session
+
+	# ② 回退：Plasma Mobile
+	# exec /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasmamobile
+fi

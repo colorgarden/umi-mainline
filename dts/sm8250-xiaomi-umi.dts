@@ -217,18 +217,34 @@
  * uart6 在一起 —— 漏了 alias 会 -ENODEV，没绑上的 uart6 还会把 qnoc 的
  * sync_state() 拖住，pcie0 跟着不 probe，表现就是“蓝牙没起来 WiFi 也没了”。 */
 
-/* ============================================================ 远程处理器（未启用）
+/* ============================================================ 远程处理器
  * ADSP = 音频（Q6AFE/Q6ASM/VA macro），SLPI = 传感器 DSP（SSC，走 fastrpc），
- * CDSP = 计算，Venus = 视频编解码。主线驱动都在，缺的是固件（要从 MIUI 的
- * vendor 分区/dtb 里取 adsp.mbn / slpi.mbn / cdsp.mbn / venus.mbn）。
+ * CDSP = 计算，Venus = 视频编解码。主线驱动都在，缺的是固件。
  *
- * ★ 保持 disabled：缺固件时每个会打一串 -ENOENT，而且 adsp 一起来 GPR/APR
- *   会去等 q6voice 的 mailbox（见 armbian sm8250-7.2 的 0510 patch）。
- *   要做音频/传感器时逐个打开，参考 docs/AUDIO.md 与 docs/SENSORS.md。
+ * ★ 固件从 **modem 分区的 image/** 来（不是 dsp 分区，那里只有 DSP 侧 .so）：
+ *     /dev/disk/by-partlabel/modem → image/adsp.mdt + image/adsp.b00..b18
+ *   装到手机上要改名：
+ *     adsp.mdt            -> /lib/firmware/qcom/sm8250/umi/adsp.mbn
+ *     adsp.b00 … adsp.b18 -> 同目录原名（qcom_mdt_load 按 .mbn/.mdt 前缀找 bNN）
+ *   现成脚本：tools/install-adsp-firmware.sh
+ *
+ * 目前只开 ADSP（音频的第一块砖）。SLPI/CDSP/Venus 等做到再说，
+ * 缺固件时每开一个都会刷一串 -ENOENT。
  */
 &adsp {
+	status = "okay";
 	firmware-name = "qcom/sm8250/umi/adsp.mbn";
-	status = "disabled";
+
+	/* AVCS 音频拓扑和 ADSP 的 audio PD 共用 0x1801 这个音频 context bank，
+	 * 需要让 glink 上的 APR 总线上报这条 IOMMU 映射，否则拓扑加载失败。
+	 * （armbian 0044 里同样的写法；不加这一行，后面做声卡时会卡在这里） */
+	glink-edge {
+		apr {
+			service@3 {
+				iommus = <&apps_smmu 0x1801 0x0>;
+			};
+		};
+	};
 };
 
 &cdsp {

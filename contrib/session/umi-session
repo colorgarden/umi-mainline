@@ -1,0 +1,24 @@
+#!/bin/sh
+# tty1 会话入口：优先 Phosh；连续崩两次就退回 Plasma Mobile，避免无限重启。
+#
+# 为什么需要这个：Phosh 0.57 + wlroots 0.20 的 layer-shell 检查曾让它启动即崩，
+# getty 会一次次把它拉起来 -> 死循环，连 SSH 都不好用。有了计数兜底，
+# 最坏情况一分钟后自动回到能用的桌面。
+set -u
+CNT=/run/umi-session-fail
+
+n=0
+if [ -f "$CNT" ]; then
+	n=$(cat "$CNT" 2>/dev/null || echo 0)
+	case "$n" in ''|*[!0-9]*) n=0 ;; esac
+fi
+
+if [ "$n" -ge 2 ]; then
+	echo "umi-session: Phosh 已连续启动失败 $n 次 -> 退回 Plasma Mobile"
+	echo "umi-session: 排查完执行 rm -f $CNT 再重启可回到 Phosh"
+	exec /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasmamobile
+fi
+
+echo $((n + 1)) > "$CNT"
+echo "umi-session: 启动 Phosh（第 $((n + 1)) 次尝试，上限 2）"
+exec /usr/bin/phosh-session
