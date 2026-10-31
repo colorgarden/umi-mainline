@@ -54,31 +54,33 @@ wlroots 上游 commit `8dec751a6d`（"layer-shell: error on 0 dimension without 
 Debian / Alpine / Artix 都给 wlroots 打了 revert 补丁，**Arch 没打** —— 所以 Arch 的
 phosh + phoc 在这台机器上必崩。
 
-### 2.1 修法：换掉 libwlroots
+### 2.1 修法：自己编一个带 revert 的 `wlroots0.20` 包
 
-Arch 的 `wlroots0.20` 与 Debian 的 `libwlroots-0.20` 是同一版本（0.20.2），
-ABI 一致，可以直接换 `.so`：
+**别用"替换 .so"的办法**：那个文件属于 `wlroots0.20` 包，`pacman -Syu`（甚至
+`pacman -S wlroots0.20` 重装）会把它盖回 Arch 原版，phosh 就又崩。
 
-```sh
-# 1) 取 Debian 的 arm64 包并解出 .so（tools/wlroots-revert-layershell.sh）
-sh tools/wlroots-revert-layershell.sh          # → /tmp/wlrdeb/libwlroots-0.20.so
-# 2) 备份原库 + 替换 + ldconfig（tools/install-phosh-session.sh 里也做了）
-cp -a /usr/lib/libwlroots-0.20.so /root/lib-backup/libwlroots-0.20.so.arch-bak
-cp -f /tmp/wlrdeb/libwlroots-0.20.so /usr/lib/libwlroots-0.20.so
-ldconfig
+正确做法（现在就是这么装的）：
+
+```
+contrib/pacman-hooks/wlroots0.20/PKGBUILD                              # Arch 官方 PKGBUILD + revert
+contrib/pacman-hooks/wlroots0.20/Revert-layer-shell-*.patch
+tools/build-wlroots-umi.sh      # 装构建依赖 + 以 colorgarden 身份 makepkg --skippgpcheck
+tools/install-wlroots-pkg.sh    # pacman -U + 设 IgnorePkg + 重启会话
 ```
 
-验证：`ldd /usr/bin/phoc | grep wlroots` 指向 `/usr/lib/libwlroots-0.20.so`；
-headless 试跑 12 秒不退出即成功：
+- 版本是 `0.20.2-2`（仓库是 `0.20.2-1`）：本地更高，`-Syu` 不会降级覆盖；
+- `pkgrel` 只能是 `整数[.整数]`，写成 `1.umi1` 会被 makepkg 直接拒绝（踩过）；
+- 另加 `IgnorePkg = wlroots0.20`（`/etc/pacman.conf`）双保险：
+  上游涨版本时不会偷偷换回没打补丁的版本，需要时手工重编。
+- 验证：`pacman -Qo /usr/lib/libwlroots-0.20.so` 应显示 `wlroots0.20 0.20.2-2`。
 
-```sh
-XDG_RUNTIME_DIR=/run/user/0 WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
-	dbus-run-session -- phoc -S -E /usr/lib/phosh/phosh
-```
+> 副作用提醒：IgnorePkg 意味着 `wlroots0.20` 不再随系统升级。
+> 当 `phoc` 升到需要更新 wlroots 时，pacman 会因依赖版本不足而报错，
+> 那时把 PKGBUILD 的 `pkgver` 改成新版、把 revert 补丁重新 rebase，再编一次。
 
-> ⚠ 注意：`pacman -Syu` 一旦更新 `wlroots0.20` 就会把这个补丁覆盖回去。
-> 更新后要么重跑上面的替换，要么自己用 ABS/AUR 重编带 revert 的 wlroots。
-> 备份在 `/root/lib-backup/`，随时可回滚。
+> ⚠ 不要用 Debian 编好的 `libwlroots-0.20.so` 顶替：ABI 虽然一样，但构建选项不同，
+> 表现为**应用窗口"起了但不显示"，切后台再切回来才出现**（phosh 日志里
+> `Startup of app ... timed out`）。我们自编的包用 Arch 自己的 meson 选项，没有这个问题。
 
 ## 3. 组件清单（Arch ARM）
 

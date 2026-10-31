@@ -1,0 +1,42 @@
+# Maintainer: colorgarden (local umi build)
+# 基于 Arch 官方 wlroots0.20 PKGBUILD，只加两件事：
+#   1. layer-shell 0 尺寸的 revert 补丁（phosh 0.57 需要，Arch 主包 wlroots 有、0.20 包没有）
+#   2. pkgrel=2（仓库是 1）—— 版本比仓库高，
+#      pacman -Syu 就不会用它自己的包把我们这份覆盖掉
+pkgname=wlroots0.20
+_pkgname=wlroots
+pkgver=0.20.2
+pkgrel=2
+pkgdesc="Modular Wayland compositor library (umi: + layer-shell revert for phosh)"
+url="https://gitlab.freedesktop.org/wlroots/wlroots"
+license=('MIT')
+arch=('aarch64')
+depends=('glibc' 'libdisplay-info.so' 'libdrm' 'libglvnd' 'libinput' 'liblcms2.so' 'libliftoff.so' 'libpixman-1.so'
+         'libseat.so' 'libudev.so' 'libvulkan.so' 'libwayland-client.so' 'libwayland-server.so' 'libxcb' 'libxkbcommon.so'
+         'wayland-protocols' 'opengl-driver' 'xcb-util-errors' 'xcb-util-renderutil' 'xcb-util-wm')
+makedepends=('git' 'glslang' 'meson' 'ninja' 'systemd' 'vulkan-headers' 'xorg-xwayland')
+optdepends=('xorg-xwayland: Xwayland support'
+            'vulkan-validation-layers: validation layers for the experimental vulkan renderer backend')
+provides=("libwlroots-${pkgver%.*}.so")
+source=("${pkgname}::git+${url}.git#tag=${pkgver}?signed"
+        'Revert-layer-shell-error-on-0-dimension-without-anchors.patch')
+sha256sums=('SKIP'
+            'SKIP')
+validpgpkeys=('34FF9526CFEF0E97A340E2E40FDE7BE0E88F5E48'  # Simon Ser
+              '9DDA3B9FA5D58DD5392C78E652CB6609B22DA89A'  # Drew DeVault
+              '4100929B33EEB0FD1DB852797BC79407090047CA') # Sway signing key
+
+prepare() {
+	cd "${pkgname}"
+	patch -Np1 -i "${srcdir}/Revert-layer-shell-error-on-0-dimension-without-anchors.patch"
+}
+
+build() {
+	arch-meson "${pkgname}" build
+	ninja -C build
+}
+
+package() {
+	DESTDIR="${pkgdir}" ninja -C build install
+	install -Dm 644 "${pkgname}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
