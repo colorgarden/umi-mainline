@@ -693,6 +693,32 @@
 		 * （写 "qca/hpbtfw21.tlv" 会变成 qca/qca/... 那种双前缀路径）。
 		 */
 		firmware-name = "htnv20.bin";
+
+		/*
+		 * ★★ 必须给 BD_ADDR，否则蓝牙永远「未配置」。
+		 *
+		 * 现象：固件下载成功、QCA setup 走完，hci0 也出现了，但
+		 *     btmgmt info      -> "Index list with 0 items"
+		 *     bluetoothctl list -> 空
+		 *     /sys/kernel/debug/bluetooth/hci0/ 里只有 ibs
+		 *
+		 * 原因链（插桩确认，见 docs/BLUETOOTH.md §6）：
+		 *   btqca.c 的 qca_check_bdaddr() 读控制器地址，发现它和 NVM 里的
+		 *   地址一样（本机读回来 ad:5a:00:00:00:00，打印是 00:00:00:00:5a:ad），
+		 *   就置 HCI_QUIRK_USE_BDADDR_PROPERTY —— 等于宣布「这颗芯片没有
+		 *   出厂地址，等设备树/用户态给」。hci_sync.c 的 hci_dev_setup_sync()
+		 *   随后把它标成 HCI_UNCONFIGURED，只跑 hci_unconf_init_sync()，
+		 *   mgmt 只发 Unconfigured Index Added，bluetoothctl 就看不到它。
+		 *
+		 * 给了 local-bd-address 之后：hci_dev_get_bd_addr_from_property()
+		 * 读出地址 -> hdev->set_bdaddr()（qca_set_bdaddr）写进控制器 ->
+		 * invalid_bdaddr 变 false -> 正常配置、mgmt 发 Index Added。
+		 *
+		 * 字节序：DT 里是**小端**（LSB 在前）——
+		 *     [cc 3d 78 9d d7 a6] == a6:d7:9d:78:3d:cc
+		 * 取值跟着 WiFi 的固定 MAC（a6:d7:9d:78:3d:cb）顺延一位。
+		 */
+		local-bd-address = [cc 3d 78 9d d7 a6];
 	};
 };
 

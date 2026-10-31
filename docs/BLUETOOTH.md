@@ -107,73 +107,107 @@ Bluetooth: hci0: QCA setup on UART is completed    ← btqca.c 的最后一行�
 
 `/sys/kernel/debug/bluetooth/hci0/ibs` 存在 ⇒ `qca_debugfs_init()` 跑过 ⇒ **setup 返回 0**。
 
-## 6. 当前卡点：hci0 没有 mgmt index
+## 6. 曾经的卡点（已解决）：hci0 没有 mgmt index
 
-现象：
+> **根因：控制器没有可用 BD_ADDR，内核把它当成「未配置控制器」。**
+> 修法：DT 的 `bluetooth` 节点里加 `local-bd-address`（小端）。
+> 现在用的是 `[cc 3d 78 9d d7 a6]` = `a6:d7:9d:78:3d:cc`。
+
+### 6.1 当时的现象
 
 ```
 $ ls /sys/class/bluetooth/          → hci0
-$ ls /sys/class/bluetooth/hci0/     → device power rfkill0 subsystem uevent
-$ cat /sys/kernel/debug/bluetooth/hci0/   → 只有 ibs
+$ cat /sys/kernel/debug/bluetooth/hci0/   → 只有 ibs（没有 dut_mode）
 $ btmgmt info                       → Index list with 0 items
 $ bluetoothctl list                 → （空）
-$ btmgmt --index 0 info             → Invalid Index
 ```
 
-已经排除的：
+### 6.2 查证过程（留着，下次遇到类似问题照抄）
 
-| 猜想 | 证据 |
-|------|------|
-| 固件没加载 | `QCA setup on UART is completed`，debugfs 里有 `ibs` |
-| 线程卡死 | 扫了全部 452 个线程的内核栈，没有一处在 hci/serdev/qca 代码里 |
-| 命令超时/被拒 | `dmesg` 里 `Opcode … failed` / `tx timeout` 计数都是 **0** |
-| 设备被 unregister | `rfkill0` 还在（`hci_unregister_dev` 会先撤 rfkill 再 `device_del`） |
-| rfkill 挡住 | `rfkill list` → hci0 soft/hard 都是 no |
+1. **先排除"卡死"**：扫了全部线程的内核栈，没有一处在 hci/serdev/qca 里
+   （`/proc/*/task/*/stack` 里 grep hci|serdev|qca）。
+2. **再排除"命令失败"**：`dmesg` 里 `Opcode … failed` / `tx timeout` 都是 0。
+3. **插桩**（`patches/bt-debug-trace.py`）打出关键事实：
 
-剩下的两条可能（二选一，需要插桩区分）：
+```
+[umi-bt] hci0 setup ret=0
+[umi-bt] hci0 unconf=1 ext_cfg=0                      ← 就是这里
+[umi-bt] hci0 open_sync=0 up=1 setup=1 unconf=1 bdaddr=ad:5a:00:00:00:00
+[umi-bt] hci0 power_on open=0
+```
 
-1. `hci_dev_init_sync()` 里 `hci_init1_sync()`（Reset + `br_init1`）失败 —— 但**没有打日志**；
-2. 判成 **unconfigured**（`HCI_QUIRK_EXTERNAL_CONFIG` / `INVALID_BDADDR`）→ 走
-   `hci_unconf_init_sync()`，然后 mgmt 只发 *Unconfigured* Index Added，
-   `READ_INDEX_LIST` 会跳过它（所以是 0 items）。
+`unconf=1` 说明内核走了 `hci_dev_setup_sync()` 里「未配置」那条：
 
-两条路的共同点：`hci_debugfs_create_basic()`（会建 `dut_mode`）都没跑过 —— 
-而 `hci0/` 里确实没有 `dut_mode`，说明确实停在 init 早期。
+```c
+invalid_bdaddr = test_bit(HCI_QUIRK_INVALID_BDADDR) || test_bit(HCI_QUIRK_USE_BDADDR_PROPERTY);
+if (!ret) {
+	if (USE_BDADDR_PROPERTY && public_addr == ANY) hci_dev_get_bd_addr_from_property();  /* 读 DT */
+	if (invalid_bdaddr && public_addr != ANY && hdev->set_bdaddr) { ret = set_bdaddr(); ... }
+}
+if (EXTERNAL_CONFIG || invalid_bdaddr) set HCI_UNCONFIGURED;
+if (HCI_UNCONFIGURED) return hci_unconf_init_sync(hdev);   /* 只读版本号，不建 debugfs */
+```
 
-### 6.1 插桩工具
+而未配置控制器在 mgmt 里只发 **Unconfigured Index Added**，
+`READ_INDEX_LIST` 会直接跳过它 → `bluetoothctl` 永远看不到。
+
+### 6.3 为什么 quirk 会被置上
+
+`btqca.c: qca_check_bdaddr()`：
+
+```c
+if (bacmp(&hdev->public_addr, BDADDR_ANY))   return 0;   /* DT 给了就直接跳过 */
+... 读 HCI_OP_READ_BD_ADDR ...
+if (!bacmp(&bda->bdaddr, &config->bdaddr))               /* 控制器地址 == NVM 里的地址 */
+	set_bit(HCI_QUIRK_USE_BDADDR_PROPERTY, &hdev->quirks);
+```
+
+本机 NVM（`htnv20.bin`）里没有出厂地址，控制器报回来的是
+`ad:5a:00:00:00:00`（`%pM` 序，打印成 `00:00:00:00:5a:ad`），
+和 NVM 里的一致 → 驱动认定「等设备树或用户态来给」。
+
+### 6.4 修法与字节序
+
+```dts
+&uart6 {
+	bluetooth {
+		...
+		local-bd-address = [cc 3d 78 9d d7 a6];   /* = a6:d7:9d:78:3d:cc */
+	};
+};
+```
+
+`Documentation/devicetree/bindings/net/bluetooth/bluetooth-controller.yaml` 写得很清楚：
+**小端、最低有效字节在前** —— 要 `00:11:22:33:44:55` 就得写 `[55 44 33 22 11 00]`。
+写反了蓝牙地址会变成镜像倒序（`cc:3d:...` ↔ `a6:d7:...`）。
+
+### 6.5 修好之后
+
+```
+[umi-bt] hci0 unconf=0
+[umi-bt] hci0 init1(ret=0) init2=0 init3=0 init4=0
+btmgmt info → Index list with 1 item
+bluetoothctl list → Controller A6:D7:9D:78:3D:CC umi [default]
+bluetoothctl power on → succeeded
+```
+
+> 注意：`ad:5a:00:00:00:00` 这种半零地址说明 NVM 是"干净"的（`htnv20.bin` 只是默认配置）。
+> 想要手机原厂 BD_ADDR，得从原厂的 `bt_nv`/`MODEMST` 分区里取，
+> 对功能没影响，只是配对记录跟旧系统不通用。
+
+## 7. 复现步骤（当前最终状态）
 
 ```sh
-# 打补丁（在 WSL）
-wsl -d umi -u root -- python3 /mnt/d/project/UMI-mainline/patches/bt-debug-trace.py
-# 构建 + 刷机后看
-dmesg | grep umi-bt
-# 定位完还原
-wsl -d umi -u root -- python3 /mnt/d/project/UMI-mainline/patches/bt-debug-trace.py --revert
+# 固件（rootfs 与 initramfs 都要）
+scp firmware/qca/htbtfw20.tlv firmware/qca/htnv20.bin root@PHONE:/lib/firmware/qca/
+
+# 模块树（只要重编过内核就同步）
+out/modroot/lib/modules/6.12.94-umi-dirty/kernel  → /lib/modules/6.12.94-umi-dirty/
+depmod -a 6.12.94-umi-dirty
+
+# 验证
+dmesg | grep -iE 'QCA Downloading|setup on UART'
+btmgmt info                       # 期望 Index list with 1 item
+bluetoothctl show                 # 期望 Controller … umi
+systemctl enable --now bluetooth
 ```
-
-会打印：`setup ret=`、`unconf=`、`init1(ret=)`、`init2/3/4=`、`setup_sync=`、
-`init_sync=`、`open_sync=`、`power_on open=`、`idx:`（含 bdaddr / rfkill / unconf 三个 flag）。
-
-### 6.2 mgmt 探测工具
-
-`tools/mgmt-probe.py`（推到手机上用 `python3` 跑）直接读
-`READ_INDEX_LIST` / `READ_UNCONF_INDEX_LIST` / `READ_INFO(0)`，
-用来判断「是没注册」还是「注册了但 unconfigured」。
-
-> 注：`btmgmt` 的交互式命令（`unconf-index-list` 之类）在非 tty 下会挂住，
-> 一调用就等着 stdin —— 别在脚本里用。
-
-### 6.3 如果确认是 unconfigured
-
-QCA6390 的 BD_ADDR 来自 NVM；如果 NVM 里是 `00:00:00:00:00:00`，
-主线会让它「未配置」，需要用户态给地址：
-
-```sh
-btmgmt --index 0 public-addr AA:BB:CC:DD:EE:FF   # 控制器能看见之后
-# 或者在 DT 里给：
-bluetooth { local-bd-address = [..]; };          # 需要驱动置 HCI_QUIRK_USE_BDADDR_PROPERTY
-```
-
-6.12 的通用机制：`hci_dev_get_bd_addr_from_property()` 会读 `local-bd-address`，
-但只有 `HCI_QUIRK_USE_BDADDR_PROPERTY` 置位的驱动才会走到 —— `hci_serdev` 不置，
-所以要么打小补丁，要么用 `btmgmt public-addr` 一次性写入 NVM。
