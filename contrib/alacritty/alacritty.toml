@@ -1,0 +1,33 @@
+# Alacritty —— Xiaomi Mi 10 (Plasma Mobile, Wayland)
+#
+# 字体 Hack（本机 /usr/share/fonts/TTF/Hack-*.ttf，包 ttf-hack）。
+#
+# ★ 为什么不能写 family = "Hack:style=Regular"：
+#   Alacritty 0.13+ 的 TOML 里 font.normal.family 是**纯字体家族名**，
+#   style 是单独的 key。把 "Hack:style=Regular" 整串塞进 family 时，
+#   fontconfig 找不到叫这个名字的家族 -> 静默回落到默认等宽字体
+#   （看起来就是"字体没生效"）。正确写法是下面这样，家族和字形分开。
+
+[font]
+size = 13.0
+
+[font.normal]
+family = "Hack"
+style = "Regular"
+
+[font.bold]
+family = "Hack"
+style = "Bold"
+
+[font.italic]
+family = "Hack"
+style = "Italic"
+
+[font.bold_italic]
+family = "Hack"
+style = "Bold Italic"
+
+[window]
+# 手机屏 1080x2340，13pt 的 Hack 一行大概 40 列，够用
+dynamic_padding = true
+padding = { x = 8, y = 8 }

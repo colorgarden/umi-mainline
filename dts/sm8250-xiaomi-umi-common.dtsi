@@ -667,14 +667,33 @@
 };
 
 &uart6 {
-	/*
-	 * 蓝牙：链路（uart6 + bluetooth 节点 + pwrseq 的 BT_EN）已经全部验证
-	 * 能跑通到最后一步（hci0 出现、gpio21 被拉高、QCA6390 认出来），
-	 * 但开着 uart6 时**开机稳定性有问题**（出现过整机落进 initramfs shell、
-	 * SSH 握手即断）。所以默认关掉，需要测蓝牙时把 status 改回 "okay"
-	 * 单独构建一版（见 docs/BLUETOOTH.md）。
-	 */
-	status = "disabled";
+	status = "okay";
+
+	bluetooth {
+		compatible = "qcom,qca6390-bt";
+		/*
+		 * 这六条 supply 不是给驱动供电用的（hci_qca 对 QCA6390 的
+		 * num_vregs = 0），而是让 pwrseq-qcom-wcn 的
+		 * pwrseq_qcom_wcn_match() 认下这个 consumer：它要求 consumer 的
+		 * vddaon-supply 解析到「父节点就是 PMU」的那个 regulator。
+		 * 认下来之后 hci_qca 才会 pwrseq_power_on() -> 拉高 BT_EN(gpio21)。
+		 */
+		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
+		vddaon-supply = <&vreg_pmu_aon_0p59>;
+		vddbtcmx-supply = <&vreg_pmu_btcmx_0p85>;
+		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
+		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
+		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
+		max-speed = <3200000>;
+		/*
+		 * hci_qca 会把这个名字前面再加一次 "qca/"，依次试 "<name>" 和
+		 * "<name 去掉扩展名>.bin"；另外 patchram 的名字是它按 ROM 版本自己拼的
+		 * （本机 ROM 0x200 -> qca/htbtfw20.tlv）。
+		 * 所以这里只写 NVM 的**文件名**，最终落到 qca/htnv20.bin
+		 * （写 "qca/hpbtfw21.tlv" 会变成 qca/qca/... 那种双前缀路径）。
+		 */
+		firmware-name = "htnv20.bin";
+	};
 };
 
 /* ---------------------------------------------------------------- Type-C / 充电 */

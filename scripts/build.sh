@@ -64,7 +64,7 @@ fi
 mkdir -p "$WS/out"
 
 echo "== [1/6] 同步 DTS 和面板驱动到内核树"
-for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts sm8250-xiaomi-umi-plus.dts umi-dtbo-stubs.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi sm8250-xiaomi-umi-wifi.dts xiaomi-umi-battery.dtsi; do
+for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts umi-dtbo-stubs.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi xiaomi-umi-battery.dtsi; do
 	[ -f "$WS/dts/$f" ] || continue
 	cp -f "$WS/dts/$f" "$TREE/arch/arm64/boot/dts/qcom/$f"
 done
@@ -252,7 +252,7 @@ if [ -f "$TREE/drivers/gpio/gpiolib-shared.c" ]; then
 fi
 
 MK=$TREE/arch/arm64/boot/dts/qcom/Makefile
-for d in sm8250-xiaomi-umi sm8250-xiaomi-umi-plus sm8250-xiaomi-umi-wifi; do
+for d in sm8250-xiaomi-umi; do
 	grep -q "$d\.dtb" "$MK" || \
 		printf 'dtb-$(CONFIG_ARCH_QCOM)\t+= %s.dtb\n' "$d" >> "$MK"
 	# ★ 必须用 -@ 编译：ABL 会往 base DTB 上打 dtbo overlay，overlay 靠 __symbols__
@@ -472,10 +472,10 @@ fi
 echo "== [6/6] 收集产物到 $WS/out"
 cp -f "$OUT/arch/arm64/boot/Image.gz"      "$WS/out/Image.gz"
 cp -f "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi.dtb"      "$WS/out/sm8250-xiaomi-umi.dtb"
-[ -f "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-plus.dtb" ] && \
-	cp -f "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-plus.dtb" "$WS/out/sm8250-xiaomi-umi-plus.dtb"
-[ -f "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-wifi.dtb" ] && \
-	cp -f "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-wifi.dtb" "$WS/out/sm8250-xiaomi-umi-wifi.dtb"
-cp -f "$OUT/.config" "$WS/out/config-effective"
+
+# 板级 DTB 只有一颗，见 dts/sm8250-xiaomi-umi.dts 顶部说明
+
+
+
 ls -l "$WS/out" | sed -n '1,20p'
 echo "== 完成"

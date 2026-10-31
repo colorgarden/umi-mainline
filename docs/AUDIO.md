@@ -1,0 +1,210 @@
+# 音频（Umi / SM8250）—— 现状与移植计划
+
+> 参考实现：`zhaoyuanwang123/armbian` 的 `patch/kernel/archive/sm8250-7.2/`
+> - `0044-dts-add-xiaomi-umi-board.patch` —— 完整 umi 板级 DTS（音频链 + SLPI + 调制解调器）
+> - `0510-audio-lpass-q6voice.patch` —— LPASS/ADSP 侧 q6voice（通话音频）补丁
+> - `0043-umi-touch-stfts-panel-qdefconfig.patch` —— defconfig 里的音频开关（2.6 MB，含 stfts 驱动）
+>
+> 本文把「硬件接线 + 内核要什么 + 我们要做什么」拆开写，免得下次又从零翻补丁。
+
+---
+
+## 1. 硬件（从厂商 DT / 0077 之后的 dump 反推）
+
+| 部件 | 型号 | 总线 | 地址 | 作用 |
+|------|------|------|------|------|
+| 主板 codec | **WCD9380/WCD9385**（`qcom,wcd9380-codec`） | SoundWire（`&swr1` / `&swr2`） | SDW 从设备 | 耳机/耳麦/听筒模拟通路、MBHC 检测 |
+| 扬声器功放 ×2 | **Cirrus CS35L41** | I2C（`&i2c3`，1 MHz） | `0x40`（RCV 前缀）/ `0x42`（LCV 前缀） | 立体声喇叭 + 听筒，TDM 接 mi2s2 |
+| 数字麦 | 6 路 DMIC | LPASS VA macro | — | 录音 |
+| 音频 DSP | **ADSP**（q6afe/q6asm/q6adm） | glink / APR | — | 所有 PCM 播录、DSP 拓扑、通话 |
+| 模拟偏置 | PM8150B/PM8150L `bob` | — | — | micbias、功放 VP |
+
+关键电压/引脚（0044 里明确写了）：
+
+```dts
+wcd938x: audio-codec {
+	compatible = "qcom,wcd9380-codec";
+	reset-gpios = <&tlmm 32 GPIO_ACTIVE_LOW>;
+	vdd-buck-supply = <&vreg_s4a_1p8>;
+	vdd-rxtx-supply = <&vreg_s4a_1p8>;
+	vdd-io-supply   = <&vreg_s4a_1p8>;
+	vdd-mic-bias-supply = <&vreg_bob>;
+	/* 2.75 V：vendor 的 cdc-micbias*-mv 就是 2.75 V，
+	 * 用 1.8 V 会把 AMIC 饿死、耳机按键（mbhc）也检测不到 */
+	qcom,micbias1-microvolt = <2750000>;   ... 4 路都是 2.75 V
+	qcom,mbhc-buttons-vthreshold-microvolt = <75000 150000 237000 500000 500000 500000 500000 500000>;
+	qcom,mbhc-headset-vthreshold-microvolt   = <1700000>;
+	qcom,mbhc-headphone-vthreshold-microvolt = <50000>;
+	qcom,rx-device = <&wcd_rx>;
+	qcom,tx-device = <&wcd_tx>;
+};
+```
+
+CS35L41（注意**同一颗 reset 脚** GPIO114，两根 IRQ 分开：112 = RCV / 113 = LCV）：
+
+```dts
+cs35l41_speaker: speaker-amp@40 {   /* sound-name-prefix = "RCV" */
+	compatible = "cirrus,cs35l41";
+	reg = <0x40>;
+	interrupts = <113 IRQ_TYPE_LEVEL_LOW>;
+	reset-gpios = <&tlmm 114 GPIO_ACTIVE_HIGH>;
+	cirrus,boost-peak-milliamp = <4000>;
+	cirrus,boost-ind-nanohenry = <1000>;
+	cirrus,boost-cap-microfarad = <15>;
+	cirrus,asp-sdout-hiz = <3>;
+	cirrus,gpio2-src-select = <4>;
+	cirrus,gpio2-output-enable;
+};
+cs35l41_rcv: speaker-amp@42 {       /* sound-name-prefix = "LCV" */
+	... interrupts = <112 IRQ_TYPE_LEVEL_LOW>;
+};
+```
+
+> ⚠ 槽位顺序是有讲究的：0x42（LCV）接**下喇叭**、0x40（RCV）接**上听筒**，
+> 和 Mi 10T 参考正好相反。dai-link 里 `sound-dai = <&cs35l41_rcv 0>, <&cs35l41_speaker 0>;`
+> 的顺序决定谁拿 TDM slot 0，写反了左右声道会反。
+
+DSP 固件（remote proc）：
+
+```dts
+&adsp { status = "okay"; firmware-name = "qcom/sm8250/umi/adsp.mbn";
+	glink-edge { apr { service@3 { iommus = <&apps_smmu 0x1801 0x0>; }; }; };
+};
+```
+
+---
+
+## 2. 内核需要什么（config）
+
+armbian 的 defconfig 里和我们相关的项（`0043-...patch`）：
+
+```
+CONFIG_SOUND=y
+CONFIG_SND=y
+CONFIG_SND_SOC=y
+CONFIG_SND_SOC_QCOM=y
+CONFIG_SND_SOC_SM8250=m
+CONFIG_SND_SOC_CS35L41_I2C=m
+CONFIG_SND_SOC_WCD938X_SDW=m
+CONFIG_SND_SOC_LPASS_VA_MACRO=m
+CONFIG_SND_SOC_LPASS_TX_MACRO=m
+CONFIG_SND_SOC_LPASS_RX_MACRO=m
+CONFIG_SND_SOC_WSA883X=m          # 我们不用（umi 是 CS35L41）
+CONFIG_SOUNDWIRE=m
+CONFIG_SOUNDWIRE_QCOM=m
+CONFIG_QCOM_Q6V5_PAS=m            # ADSP remoteproc
+CONFIG_QCOM_Q6V5_ADSP=m
+CONFIG_SND_SOC_QCOM_*（q6afe/q6asm/q6adm/q6routing 都在 SND_SOC_QCOM 里）
+```
+
+我们 `config/umi.config` 目前**没有**任何 `SND_*`：所以现在连声卡都不会出现。
+`SOUNDWIRE_QCOM` 和 `QCOM_Q6V5_PAS` 也要一起，否则 ADSP 起不来、swr 总线不 probe。
+
+---
+
+## 3. 固件
+
+| 文件 | 来源 | 放哪 |
+|------|------|------|
+| `qcom/sm8250/umi/adsp.mbn`(+`.jsn`/`.bNN`) | 厂商 `vendor` / `modem` 分区，或从 MIUI 的 `/vendor/firmware` 取 | **initramfs** 不行（ADSP probe 在 rootfs 之后也行，但稳妥起见两边都放）|
+| `qcom/sm8250/umi/cdsp.mbn` | 同上 | 同上 |
+| `qcom/wcd938x/…`（wcd938x 的 `.bin`/`.jsn`） | linux-firmware 里有 `qcom/wcd9385/` 之类，需按本机型号对 | rootfs `/lib/firmware` |
+| CS35L41 的 DSP `.bin/.wmfw` | **不需要**：umi 用 `cirrus,boost-type = <0>` 的固件内置模式，不加载 wmfw | — |
+| `qcom/umi-avcs-custom-topologies.bin` | ADSP 的 AVCS 自定义拓扑（`q6core` 按名字加载） | rootfs `/lib/firmware/qcom/` |
+| `qcom/q6voice-cal.bin`、`q6voice-vol-cal.bin`、`q6voice-devcfg.bin`、`q6voice-stream-cal.bin` | 通话音频校准（只有打 0510 的 q6voice 补丁才用） | 同上 |
+
+### 3.1 ★ pd-mapper 不是可选项
+
+armbian 的 board config 里写得很直白：
+
+> `pd-mapper`（linux-msm 交叉编译）**REQUIRED for audio**：它让 ADSP 的 `avs/audio`
+> 保护域通过 **PDR** 广播出来；没有它，APR 的 audio service 设备根本不会被创建，
+> `sm8250-sndcard` 也就永远不会 bind。
+
+也就是说：ADSP 起来了、`adsp.mbn` 也加载了，**声卡还是不出现** —— 先怀疑 pd-mapper，
+而不是 device tree。它的源码在 linux-msm/pd-mapper，Arch 没有包，需要自己编：
+`git clone https://github.com/linux-msm/pd-mapper && make && make install`（装到 `/usr/bin/pd-mapper`，
+配 `pd-mapper.service`，`ConditionPathExists=/dev/fastrpc-adsp` 之类）。
+
+> 我们已经踩过一次「=m 的驱动 boot 阶段看不到 initramfs 里的固件」的坑（`docs/BLUETOOTH.md`）。
+> ADSP 是 `=m`，probe 在 rootfs 起来之后，所以**放 rootfs 就够**；
+> 但 `adsp.mbn` 的分段文件（`.b00`…`bNN` + `.mdt` 命名规则）必须同前缀，
+> 具体加载规则见 `drivers/soc/qcom/mdt_loader.c`。
+
+---
+
+## 4. DTS 要加的东西（照 0044 抄）
+
+1. `&sound`（`qcom,sm8250-sndcard`）：`model`、`widgets`、`audio-routing`（0044 有完整 90 行，直接照抄）、
+   `pinctrl-0 = <&tert_tdm_active>`，以及 5 条 dai-link：
+   - `MultiMedia1/2/3` → `&q6asmdai`
+   - `Tertiary TDM Playback` → `&q6afedai TERTIARY_TDM_RX_0` + `&cs35l41_rcv 0`/`&cs35l41_speaker 0`
+   - `Tertiary TDM Capture` → `&q6afedai TERTIARY_TDM_TX_0`（回采，AEC 用）
+   - `WCD Capture` → `&q6afedai TX_CODEC_DMA_TX_3` + `&wcd938x 1`/`&swr2 0`/`&txmacro 0`
+   - `VA Capture` → `&q6afedai VA_CODEC_DMA_TX_0` + `&vamacro 0`
+   - （可选的 `CS-VOICE` → `&q6voicedai`，通话才需要，配合 0510 的 q6voice 补丁）
+2. `&q6afedai { dai@20 { reg = <TERTIARY_MI2S_RX>; qcom,sd-lines = <1>; }; }`
+3. `&wcd938x` 节点（走 `sound/` 顶层，不在 i2c 下）
+4. `&swr1`（RX 方向，`qcom,dout-ports = <5>`，挂 `wcd_rx: wcd9380-rx@0,4`，`qcom,rx-port-mapping = <1 2 3 4 5>`）
+5. `&swr2`（TX 方向，`qcom,din-ports = <4>`，挂 `wcd_tx: wcd9380-tx@0,3`，`qcom,tx-port-mapping = <2 3 4 5>`）
+6. `&txmacro` / `&rxmacro` / `&vamacro`（VA 要 `pinctrl-0 = <&dmic01_active>`、`vdd-micb-supply`、`qcom,dmic-sample-rate = <600000>`）
+7. `&i2c3` 上的两颗 CS35L41（**我们当前 i2c3 被触摸占用，得先确认触摸到底在 i2c3 还是 i2c13**）
+8. pinmux：`tert_tdm_active`（mi2s2 的 ws/sclk/data0/data1，GPIO135/136/137/…），CS35L41 的 IRQ/reset
+9. `&adsp` 打开 + glink `apr` 的 `iommus`（`apps_smmu 0x1801 0`），
+   否则 AVCS 拓扑起不来（音频 context bank 没配 DMA 域）
+
+⚠ **i2c3 归属还没定**：我们 `dts/sm8250-xiaomi-umi-touch.dtsi` 把触摸放在 `&i2c13`
+（`i2c@a94000`，GPIO36/37），而 0044 把触摸放 `i2c13`、把 CS35L41 放 `i2c3` —— 一致。
+但 `sm8250-xiaomi-umi-plus.dts`（已删）当年把触摸写在 `&i2c3` 是错的，别再抄那份。
+
+---
+
+## 5. 用户端（Arch/Plasma Mobile）
+
+```
+# 播放测试
+speaker-test -D hw:0,0 -c 2 -t sine -f 440
+
+# 走 pipewire（KDE 默认）
+wpctl status          # 应该能看到 Analog Stereo / 数字麦
+pactl set-default-sink <sink>
+```
+
+需要 `pipewire`、`pipewire-pulse`、`wireplumber`（我们已有）。
+如果 `aplay -l` 一个 card 都没有 → 内核层面没起来（看 `dmesg | grep -iE 'snd|q6|adsp|swr|cs35l41|wcd'`）。
+
+### 5.1 ALSA UCM 配置（没有它 pipewire 不会切通路）
+
+armbian 装的是 pmOS 那套 UCM2 配置：
+
+```
+/usr/share/alsa/ucm2/Xiaomi-Mi-10/Xiaomi Mi 10.conf
+/usr/share/alsa/ucm2/Xiaomi-Mi-10/HiFi.conf
+/usr/share/alsa/ucm2/Xiaomi-Mi-10/VoiceCall.conf
+/usr/share/alsa/ucm2/conf.d/sm8250/X10.conf          -> ../../Xiaomi-Mi-10/Xiaomi Mi 10.conf
+/usr/share/alsa/ucm2/conf.d/sm8250/Xiaomi Mi 10.conf -> 同上
+```
+
+★ 声卡 short name 是 **`X10`**（long name `Xiaomi Mi 10`），不同 alsa-lib 版本查的是不同的名字，
+所以两个符号链接都要建。没有 UCM，`wpctl` 里能看到 sink 但切 speaker/耳机/通话会失败。
+
+---
+
+## 6. 落地顺序（建议）
+
+1. **先只做 ADSP + remoteproc**：`CONFIG_QCOM_Q6V5_PAS=y`、`adsp.mbn` 进 rootfs、`&adsp` 打开。
+   验证：`cat /sys/class/remoteproc/remoteproc*/state` → `running`；`dmesg` 里 `q6afe/q6asm` 注册成功。
+2. **再加声卡**：`CONFIG_SND_SOC_SM8250=y`（内建，避免 initramfs/模块树时序）、`&sound` + q6afe/q6asm dai。
+   此时应该出现 `card0`，但没声音（功放没配）。
+3. **再点 CS35L41**（I2C + TDM）：`card0` 上有 Playback 且能出声。
+4. **最后做 WCD938x + SoundWire**：耳机/耳麦/mbhc。
+5. 通话（0510 的 q6voice）放最后 —— 它依赖 SDX55 调制解调器那条线，我们还没做。
+
+---
+
+## 7. 待确认（下次开工会卡住的点）
+
+- [ ] `adsp.mbn` / `adsp.jsn` 从哪块分区取（`dump/` 里有 partitions 表，`modem` / `vendor` 都可能是载体）
+- [ ] WCD938x 到底是 9380 还是 9385（影响 `compatible` 和固件名）
+- [ ] `tert_tdm_active` 的 pinmux 是否已在 `sm8250.dtsi` 里（主线有 `tert_mi2s_active`，要 `/delete-node/ data0-pins` 后加 data1-pins）
+- [ ] 我们 `&i2c3` 上有没有别的从设备（bq25970 在 i2c15，触摸在 i2c13，应该空着）

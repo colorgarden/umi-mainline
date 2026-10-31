@@ -1,27 +1,21 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /*
- * Xiaomi Mi 10 (umi / M2001J2C) — SM8250
+ * Xiaomi Mi 10 (umi / M2001J2C) — SM8250 "kona" — 板级 DTS（**唯一一份**）
  *
- * 阶段一（已完成）：内核能起来、USB 能枚举、COM3 拿到 root shell、UFS 6 个 LUN 全在。
- *   那时候故意不打开 mdss，让 simpledrm 接管 ABL 留下的 cont-splash，
- *   屏幕上能直接看到内核 log —— 没有 UART 时这是唯一可靠的观测手段。
+ * ★ 为什么只剩一个文件（2026-11 合并）
+ *   以前板级文件有三个：
+ *       sm8250-xiaomi-umi.dts       —— 只有显示 + GPU + 半成品 WiFi
+ *       sm8250-xiaomi-umi-wifi.dts  —— 显示 + 触摸 + 电池 + QCA6390（真正能用的那颗）
+ *       sm8250-xiaomi-umi-plus.dts  —— 早期“进阶外设”试验，PMU 供电压根是错的
+ *   于是出现下面这种事故：mkimage.sh 打的是 -wifi.dts，手工跑 pack-umi.py
+ *   默认打的是 umi.dts，刷进去之后——没有 WiFi、没有电池、蓝牙连 probe 都不做
+ *   （qca6390-pmu 的 pwrseq 只定义在 -wifi.dts 里，而蓝牙要 pwrseq 拉 BT_EN）。
  *
- * 阶段二（当前）：打开 mdss / DPU / DSI0 / 7nm PHY，验证显示子系统能 probe。
- *   ★ 面板节点（dts/xiaomi-umi-panels.dtsi）**默认不 include**。
- *     没有 panel 就：
- *       - devm_drm_of_get_bridge() 返回 -ENODEV
- *       - dsi_bind() 失败 -> msm master bind 失败 -> 不注册 card0
- *       - 因此不会做任何 modeset，屏幕上的 log 和以前完全一样
- *     但 DPU 的 dpu_kms_init()（读 catalog / 开 DISP_CC GDSC / 上 MMCX /
- *     读 MDP 寄存器）在 component_bind_all() **之前**就已经跑完了，
- *     所以这一次启动就能确认 mdss + DPU + DSI + PHY 的电源/时钟/寄存器通路。
+ *   现在只有这一颗 DTB：out/sm8250-xiaomi-umi.dtb，内容 = 板子上的一切。
+ *   仍然按功能拆成 .dtsi（common / panels / touch / battery / dtbo-stubs），
+ *   那是“一个文件太长”的拆分，**不是**“两个变体”，任何一个 include 都不许漏。
  *
- * 阶段三：把文件末尾的 #include 取消注释，面板 status="okay" 但带 xiaomi,no-init，
- *   让 DSI 真正 attach 上去、connector 出现、card0 注册 —— 仍然一个字节都不发给面板。
- *
- * 阶段四：去掉 xiaomi,no-init，真正发 init 序列，亮度从 bl-min 起。
- *
- * 需要 GPU / PCIe-WiFi / 触摸 / 面板 的其它组合请看 sm8250-xiaomi-umi-plus.dts。
+ * 里面每一块的来历、踩过的坑都写在各自的 .dtsi 里，这里只保留板级接线。
  */
 /dts-v1/;
 
@@ -30,93 +24,43 @@
 / {
 	model = "Xiaomi Mi 10";
 	compatible = "xiaomi,umi", "qcom,sm8250";
-};
 
-/* ---------------------------------------------------------------- 显示子系统 */
-
-&mdss {
-	status = "okay";
-};
-
-&mdss_dsi0 {
-	/*
-	 * ★ 这里**只**给 regulator 的引用，不给任何电压值。
-	 *   两路轨在下游 DT 里都是固定值 + qcom,proxy-consumer-enable，
-	 *   ABL 起来之后就已经是开的；主线这边 min == max 也写死成同一个值，
-	 *   regulator_enable() 只发 enable 命令，改不了电压。
+	/* ------------------------------------------------------------ QCA6390 供电/开关
+	 * 供电对应关系以 umi 的下游 DT（qcom,cnss-qca6390）为准：
+	 *     vdd-wlan-aon  (.95V) = pm8150_s6   -> vddaon
+	 *     vdd-wlan-dig  (.95V) = pm8009_s2   -> vddpmu / vddrfa0p95
+	 *     vdd-wlan-io   (1.8V) = pm8150_s4   -> vddio
+	 *     vdd-wlan-rfa1 (1.9V) = pm8150_s5   -> vddrfa1p9 / vddpcie1p9
+	 *     vdd-wlan-rfa2 (1.35V)= pm8150a_s8  -> vddrfa1p3 / vddpcie1p3
 	 *
-	 *   下游对照（dump/downstream.dts）：
-	 *     qcom,mdss_dsi_ctrl0@ae94000  vdda-1p2-supply = <&pm8150_l9>  0x124f80 = 1.2V
-	 *     qcom,mdss_dsi_phy0@ae94400   vdda-0p9-supply = <&pm8150_l5>  0xd6d80  = 0.88V
-	 *   本 DT 里：
-	 *     vreg_l9a_1p2   min=max=1200000  ✓
-	 *     vreg_l5a_0p88  min=max= 880000  ✓
+	 * vddpmu / vddrfa0p95 **不能**接 vreg_s6a_0p95：那是 AON，不是 digital。
+	 * 接错的后果是 PM8009 S2 一个 consumer 都没有，regulator_summary 里长期
+	 * `vreg_s2f_0p5  0 users  512mV`，QCA6390 的 PMU 数字域没电 —— 卡片在
+	 * 总线上永远 Detect.Quiet，WiFi 和蓝牙一起哑。
 	 */
-	vdda-supply = <&vreg_l9a_1p2>;
-	status = "okay";
-};
-
-&mdss_dsi0_phy {
-	vdds-supply = <&vreg_l5a_0p88>;
-	status = "okay";
-};
-
-/*
- * 阶段三：面板节点接进来，但带 xiaomi,no-init。
- *
- *   面板驱动会 probe / 报 mode / 注册 backlight，DSI 会 attach 上去，
- *   &mdss_dsi0_out 也有了 remote-endpoint -> dsi_bind 能过 -> msm master 绑上
- *   -> DPU 初始化进去 -> card1 出现 -> fbdev 会做一次 modeset
- *   -> 真正去锁 DSI PLL、打开 DSI 链路。
- *   但是 prepare/enable 是空的：不发任何 DCS、不拉 reset、不写背光。
- *
- *   这一步要回答的是：DSI 链路和 PLL 到底能不能起来。
- *   （阶段二已经证明 mdss / DSI ctrl / 7nm PHY 能 probe，但 component_bind_all()
- *     在 msm_drm_kms_init() **之前**跑，所以没有 panel 时 DPU 根本没被初始化。）
- */
-#include "xiaomi-umi-panels.dtsi"
-
-/*
- * 复位脚：下游 `qcom,platform-reset-gpio = <&tlmm 0x0c 0x00>`（= GPIO12, active high），
- * `qcom,mdss-dsi-reset-sequence = <1 1 0 1 1 10>` 是 (电平 延时ms) 三组：
- * 先 1 保持 1ms、再 0 保持 1ms、最后 1 保持 10ms —— 也就是一个低脉冲复位。
- *
- * 驱动里的顺序是：拉低 assert_ms(1ms) -> 拉高 release_ms(10ms)，
- * 和上面的低脉冲等价。
- *
- * ★ GPIO12 在 TLMM NORTH tile，所以 sm8250-xiaomi-umi-common.dtsi 里专门把
- *   gpio-reserved-ranges 拆开让它保留下来（12 单独是能读能写的，
- *   见那里的注释）。拿不到的话驱动会退化成「无复位模式」，probe 不会失败。
- */
-&mdss_dsi0 {
-	umi-panel@0 {
-		reset-gpios = <&tlmm 12 GPIO_ACTIVE_HIGH>;
-	};
-};
-
-/* ---------------------------------------------------------------- WiFi/BT (QCA6390) */
-
-/*
- * 这一段原来只在 sm8250-xiaomi-umi-plus.dts 里。搬进主 DTS 是因为只开 GPU 的
- * 镜像会**没有 wlan0**（PCIe 节点没开），而这两个东西并不冲突。
- *
- * WiFi 使能脚 gpio20/21 在 TLMM 的 NORTH tile，那一片在这台机器上读会
- * synchronous external abort，所以 wlan-enable-gpios / bt-enable-gpios 仍然
- * 不接（写进 gpio-reserved-ranges 了）；供电全靠下面这颗 PMU。
- */
-/ {
 	qca6390_pmu: qca6390-pmu {
 		compatible = "qcom,qca6390-pmu";
 
+		pinctrl-names = "default";
+		pinctrl-0 = <&bt_default_state>, <&wlan_default_state>;
+
 		vddaon-supply = <&vreg_s6a_0p95>;
-		vddpmu-supply = <&vreg_s6a_0p95>;
-		vddrfa0p95-supply = <&vreg_s6a_0p95>;
+		vddpmu-supply = <&vreg_s2f_0p95>;
+		vddrfa0p95-supply = <&vreg_s2f_0p95>;
 		vddrfa1p3-supply = <&vreg_s8c_1p35>;
 		vddrfa1p9-supply = <&vreg_s5a_1p9>;
 		vddpcie1p3-supply = <&vreg_s8c_1p35>;
 		vddpcie1p9-supply = <&vreg_s5a_1p9>;
 		vddio-supply = <&vreg_s4a_1p8>;
 
+		/* pwrseq-qcom-wcn 在 probe 时 devm_gpiod_get_optional("wlan-enable"/"bt-enable")
+		 * 拿这两条线。**不要**再给它们加 gpio-hog：hog 会独占，pwrseq 拿到
+		 * -EBUSY 后设备根本不存在，early power-on 也就永远没人做。 */
+		wlan-enable-gpios = <&tlmm 20 GPIO_ACTIVE_HIGH>;
+		bt-enable-gpios = <&tlmm 21 GPIO_ACTIVE_HIGH>;
+
+		/* 子节点 ldo0..ldo9：新驱动不消费，但蓝牙节点的 6 条 supply 引用这些
+		 * regulator（pwrseq 靠它认 consumer），删了 BT 就起不来。 */
 		regulators {
 			vreg_pmu_rfa_cmn: ldo0 { regulator-name = "vreg_pmu_rfa_cmn"; };
 			vreg_pmu_aon_0p59: ldo1 { regulator-name = "vreg_pmu_aon_0p59"; };
@@ -132,6 +76,110 @@
 	};
 };
 
+/* ================================================================= 显示子系统 */
+/*
+ * 这里**只**给 regulator 的引用，不给任何电压值：
+ *   下游 DT：qcom,mdss_dsi_ctrl0 vdda-1p2-supply = pm8150_l9  0x124f80 = 1.2V
+ *            qcom,mdss_dsi_phy0  vdda-0p9-supply = pm8150_l5  0xd6d80  = 0.88V
+ *   本 DT：  vreg_l9a_1p2 min=max=1200000 ✓ / vreg_l5a_0p88 min=max=880000 ✓
+ * 两路轨在下游都是固定值 + proxy-consumer，ABL 起来时就已开着，
+ * regulator_enable() 只发 enable，改不了电压。
+ */
+&mdss {
+	status = "okay";
+};
+
+&mdss_dsi0 {
+	vdda-supply = <&vreg_l9a_1p2>;
+	status = "okay";
+};
+
+&mdss_dsi0_phy {
+	vdds-supply = <&vreg_l5a_0p88>;
+	status = "okay";
+};
+
+/* 面板：timing / DSC / init 序列全在 DT 里，驱动 patches/panel-xiaomi-umi.c 只读不猜 */
+#include "xiaomi-umi-panels.dtsi"
+
+/* 复位脚：下游 qcom,platform-reset-gpio = <&tlmm 0x0c 0x00>（GPIO12，active high）。
+ * GPIO12 在 TLMM NORTH tile，common.dtsi 里专门把 gpio-reserved-ranges 拆开把它
+ * 留出来（12 单独是可读写的，坏的是别的 pin）。拿不到时驱动退化成“无复位模式”。 */
+&mdss_dsi0 {
+	umi-panel@0 {
+		reset-gpios = <&tlmm 12 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+/* ================================================================= 触摸 */
+#include "sm8250-xiaomi-umi-touch.dtsi"
+
+/* ================================================================= 电量计/充电 */
+#include "xiaomi-umi-battery.dtsi"
+
+/* ================================================================= TLMM 保留区
+ * 实测：umi 上 TLMM NORTH tile 的寄存器读不了（synchronous external abort）。
+ * 之前把整片 NORTH 都 reserved，连 WiFi/BT 使能脚（gpio20/21）和面板复位
+ * （gpio12）一起挡了。作者镜像反编译出来的 dtb 只保留 <28 4>、<40 4> 两段，
+ * 也就是说 20/21/79/81 全是可用的 —— 这正是他那边 WiFi 能起来的前提。
+ * 现在照抄：只留 28-31 / 40-43 两段。
+ *
+ * ⚠ 绝对不要写“批量探测 NORTH 引脚”的诊断：曾用 copy_from_kernel_nofault
+ *   连读 68 个引脚，SError 异步外部中止兜不住 -> panic -> WDT 重启。
+ *   要验证某个引脚，就只读那一个。
+ */
+&tlmm {
+	/delete-property/ gpio-reserved-ranges;
+	gpio-reserved-ranges = <28 4>, <40 4>;
+
+	/* wlan 是 output-low：上电靠 pwrseq 的 power_on 拉高，不要在这里拉高 */
+	bt_default_state: bt-default-state {
+		pins = "gpio21";
+		function = "gpio";
+		drive-strength = <16>;
+		output-high;
+		bias-pull-up;
+	};
+
+	wlan_default_state: wlan-default-state {
+		pins = "gpio20";
+		function = "gpio";
+		drive-strength = <16>;
+		output-low;
+		bias-pull-up;
+	};
+
+	/* 下游 DT 有 qcom,sw-ctrl-gpio = <&tlmm 124>，cnss2 只在链路恢复失败时打印
+	 * 它当前电平，从没主动写过。既然 NORTH 可访问了，就当第三道门顺手顶高。 */
+	sw_ctrl_hog: sw-ctrl-hog {
+		gpio-hog;
+		gpios = <124 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "sw-ctrl";
+	};
+};
+
+/* ================================================================= GPU (Adreno 650)
+ * 固件（a650_zap.mdt/.b00-.b02、a650_sqe.fw、a650_gmu.bin）必须打进 initramfs：
+ * adreno 是内建驱动，probe 发生在 rootfs 挂载之前，只放 /lib/firmware 会 -2。
+ * 详见 docs/GPU.md。
+ */
+&gmu {
+	status = "okay";
+};
+
+&gpu {
+	status = "okay";
+
+	zap-shader {
+		firmware-name = "qcom/a650_zap.mdt";
+	};
+};
+
+/* ============================================================= PCIe0 -> QCA6390
+ * 一个属性都不删：pinctrl-0 负责把 pin79/81 的 mux 切到 GPIO 功能，
+ * 没有它即使 gpiod 写了值也落不到引脚上（曾经的表现：Phy link never came up）。
+ */
 &pcie0 {
 	status = "okay";
 };
@@ -146,6 +194,13 @@
 	wifi@0 {
 		compatible = "pci17cb,1101";
 		reg = <0x10000 0x0 0x0 0x0 0x0>;
+
+		/* 固定 MAC：不打这个属性时卡片固件每次开机现生成一个。ath11k 在
+		 * ath11k_mac_register() 里 device_get_mac_address() 优先取 DT 这个值
+		 * （QCA6390 单 radio，pdevs_macaddr_valid 永远 false）。
+		 * 换 MAC 只改这一行，然后重打包 boot.img。 */
+		local-mac-address = [a6 d7 9d 78 3d cb];
+
 		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
 		vddaon-supply = <&vreg_pmu_aon_0p59>;
 		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
@@ -158,53 +213,35 @@
 	};
 };
 
-&uart6 {
-	status = "okay";
+/* 蓝牙节点在 common.dtsi（&uart6 + bluetooth），因为 serial1 alias 必须和
+ * uart6 在一起 —— 漏了 alias 会 -ENODEV，没绑上的 uart6 还会把 qnoc 的
+ * sync_state() 拖住，pcie0 跟着不 probe，表现就是“蓝牙没起来 WiFi 也没了”。 */
 
-	bluetooth {
-		compatible = "qcom,qca6390-bt";
-		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
-		vddaon-supply = <&vreg_pmu_aon_0p59>;
-		vddbtcmx-supply = <&vreg_pmu_btcmx_0p85>;
-		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
-		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
-		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
-	};
-};
-
-/* ---------------------------------------------------------------- GPU (Adreno 650) */
-
-/*
- * GPU 需要的固件（都从本机 MIUI 的 /vendor/firmware 取，或 modem 分区）：
+/* ============================================================ 远程处理器（未启用）
+ * ADSP = 音频（Q6AFE/Q6ASM/VA macro），SLPI = 传感器 DSP（SSC，走 fastrpc），
+ * CDSP = 计算，Venus = 视频编解码。主线驱动都在，缺的是固件（要从 MIUI 的
+ * vendor 分区/dtb 里取 adsp.mbn / slpi.mbn / cdsp.mbn / venus.mbn）。
  *
- *   /lib/firmware/qcom/a650_zap.mdt   + a650_zap.b00/.b01/.b02
- *   /lib/firmware/qcom/a650_sqe.fw
- *   /lib/firmware/qcom/a650_gmu.bin
- *
- * 6.12 的 adreno 驱动用 qcom_mdt_load() 加载 zap：它会拿固件名末尾 3 个字符
- * 换成 "bXX" 去找分段（drivers/soc/qcom/mdt_loader.c:83），所以分段文件必须
- * 和 .mdt 同前缀。zap 的名字来自 a6xx_catalog.c 里的 .zapfw，DT 里的
- * firmware-name 只是给新内核留的兼容位。
- *
- * 缺固件时 adreno probe 会失败（-2/-22），显示（msm/mdss/dsi）不受影响。
+ * ★ 保持 disabled：缺固件时每个会打一串 -ENOENT，而且 adsp 一起来 GPR/APR
+ *   会去等 q6voice 的 mailbox（见 armbian sm8250-7.2 的 0510 patch）。
+ *   要做音频/传感器时逐个打开，参考 docs/AUDIO.md 与 docs/SENSORS.md。
  */
-&gmu {
-	status = "okay";
+&adsp {
+	firmware-name = "qcom/sm8250/umi/adsp.mbn";
+	status = "disabled";
 };
 
-&gpu {
-	status = "okay";
-
-	zap-shader {
-		firmware-name = "qcom/a650_zap.mdt";
-	};
+&cdsp {
+	firmware-name = "qcom/sm8250/umi/cdsp.mbn";
+	status = "disabled";
 };
 
-/*
- * 触摸：STMicroelectronics FTS（不是 goodix，虽然下游 DT 里两个节点都 status=ok，
- * 实机上 /proc/bus/input/devices 只有 "fts"，goodix@5d 从来没 bind 过）。
- *   - 总线 i2c@a94000 = 主线 &i2c13（QUPV3 wrap1 SE5），SDA/SCL = GPIO37/36
- *   - 地址 0x49，reset = GPIO38（active high），irq = GPIO39（level low）
- * 驱动 patches/fts-umi.c，不碰任何调压器、不烧固件。
- */
-#include "sm8250-xiaomi-umi-touch.dtsi"
+&slpi {
+	firmware-name = "qcom/sm8250/umi/slpi.mbn";
+	status = "disabled";
+};
+
+&venus {
+	firmware-name = "qcom/sm8250/umi/venus.mbn";
+	status = "disabled";
+};

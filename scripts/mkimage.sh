@@ -21,7 +21,7 @@ sh "$WS/scripts/build.sh"
 
 echo "== [2/2] 打包 $WS/out/$NAME =="
 python3 "$WS/tools/pack-umi.py" \
-	--dtb "$WS/out/sm8250-xiaomi-umi-wifi.dtb" \
+--dtb "$WS/out/sm8250-xiaomi-umi.dtb" \
 	-o "$WS/out/$NAME"
 
 ls -l "$WS/out/$NAME"

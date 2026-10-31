@@ -1163,7 +1163,7 @@ fbdev 的 blank 接口 —— 驱动只偶尔收到一次 `FB_BLANK_POWERDOWN`�
 ```
 stfts/                     厂商驱动 5.2.4（fts.c 190KB + fts_lib + fts_fw.h + fts_limits.h）
 TOUCH=stfts sh scripts/build.sh      # 换这套驱动编译
-python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi-wifi.dtb --name stfts
+python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi.dtb --name stfts
 # -> out/boot-umi-stfts.img
 ```
 

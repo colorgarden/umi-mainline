@@ -12,11 +12,11 @@ D="$TREE/arch/arm64/boot/dts/qcom"
 INC=$(gcc -print-file-name=include)
 
 if [ $# -eq 0 ]; then
-	set -- sm8250-xiaomi-umi sm8250-xiaomi-umi-plus
+set -- sm8250-xiaomi-umi
 fi
 
 # 先把工作区的 dts/ 同步进树里，避免改的是 A 编的是 B
-for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts sm8250-xiaomi-umi-plus.dts umi-dtbo-stubs.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi; do
+for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts umi-dtbo-stubs.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi xiaomi-umi-battery.dtsi; do
 	[ -f "$WS/dts/$f" ] && cp -f "$WS/dts/$f" "$D/$f"
 done
 

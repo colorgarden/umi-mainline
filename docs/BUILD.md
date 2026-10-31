@@ -14,7 +14,7 @@ wsl -d umi -u root -- sh /mnt/d/project/UMI-mainline/scripts/mkimage.sh
 | 面板（CSOT j2_mp_42_02_0b，DSC cmd） | `patches/panel-xiaomi-umi.c` + `dts/xiaomi-umi-panels.dtsi` |
 | 触摸（ST FTS，fts521 主线移植版） | `fts521/`（`patches/fts-umi.c` 是旧版，不编） |
 | GPU（Adreno 650） | `dts/*.dts` 的 `&gpu`/`&gmu` + `firmware/qcom/a650_*` 打进 initramfs |
-| WiFi/BT（QCA6390 PCIe，MAC 固定） | `dts/sm8250-xiaomi-umi-wifi.dts` |
+| WiFi/BT（QCA6390 PCIe，MAC 固定） | `dts/sm8250-xiaomi-umi.dts`（唯一板级 DTS，含 WiFi/BT/电池/触摸/面板） |
 | 电量计 / 充电 / 快充 | `power/qcom_fg.c`、`qcom_pm8150b_charger.c`、`bq25970_charger.c` |
 | 桌面（Plasma Mobile，在 rootfs 里） | `scripts/umi-plasma.sh` |
 
@@ -24,14 +24,14 @@ wsl -d umi -u root -- sh /mnt/d/project/UMI-mainline/scripts/mkimage.sh
 ### 只重打镜像、不重编内核
 
 ```sh
-python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi-wifi.dtb -o out/boot-umi.img
+python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi.dtb -o out/boot-umi.img
 ```
 
 ### 换一个驱动做对照实验（可选）
 
 ```sh
 TOUCH=stfts sh scripts/build.sh            # 厂商 5.2.4 驱动
-python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi-wifi.dtb -o out/boot-umi-stfts.img
+python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi.dtb -o out/boot-umi-stfts.img
 ```
 
 实验镜像**一定要另起名字**，别覆盖 `boot-umi.img`。
@@ -57,7 +57,7 @@ sh scripts/mkinitramfs.sh          # 会把 firmware/qcom/a650_* 打进去
 ## 3. 打包 boot.img
 
 ```sh
-python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi-wifi.dtb -o out/boot-umi.img
+python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi.dtb -o out/boot-umi.img
 ```
 
 `tools/pack-umi.py` 会读原厂 boot.img 的模板（地址/页大小/cmdline），

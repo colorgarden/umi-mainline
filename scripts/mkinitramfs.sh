@@ -80,6 +80,23 @@ else
 	echo "== 没有 firmware/qcom，GPU probe 会报 -2（显示不受影响）"
 fi
 
+# ---- 蓝牙固件（QCA6390）----
+# 同理：hci_qca 是内建的，probe 在 rootfs 挂上之前就发生了，所以
+#   Direct firmware load for qca/htbtfw20.tlv failed with error -2
+# 而手动 unbind/bind（rootfs 已挂）又能成功 —— 差别就在于 initramfs 里有没有。
+BFW_SRC="$WS/firmware/qca"
+if [ -d "$BFW_SRC" ]; then
+	mkdir -p "$BUILD/lib/firmware/qca"
+	for f in "$BFW_SRC"/htbtfw20.tlv "$BFW_SRC"/htnv20.bin; do
+		[ -e "$f" ] || continue
+		cp "$f" "$BUILD/lib/firmware/qca/"
+	done
+	echo "== 蓝牙固件已装入 initramfs:"
+	ls "$BUILD/lib/firmware/qca" | sed 's/^/     /'
+else
+	echo "== 没有 firmware/qca，蓝牙 probe 会报 -2"
+fi
+
 cp "$BB" "$BUILD/bin/busybox"
 chmod 755 "$BUILD/bin/busybox"
 # 常用 applet 先建好链接（init 里也会 busybox --install，这里做双保险）

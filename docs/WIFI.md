@@ -33,7 +33,7 @@ Arch 的 linux-firmware 自带，**已经齐了**，不缺固件。
 
 ## 2. 做到哪一步了
 
-设备树 `dts/sm8250-xiaomi-umi-wifi.dts`（基线树 + PCIe/QCA6390）。
+设备树 `dts/sm8250-xiaomi-umi.dts`（唯一板级 DTS；`-wifi.dts` 已在 2026-11 合并进它）。
 
 ### 2.1 第一版：pinctrl-0 报 -EINVAL
 
@@ -781,7 +781,7 @@ um_radios > 1），所以 DT 的值一定生效。
 3. 打包时指定这份 DTB：
 
 ```sh
-python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi-wifi.dtb --name all1
+python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi.dtb --name all1
 fastboot boot out/boot-umi-all1.img
 ```
 
