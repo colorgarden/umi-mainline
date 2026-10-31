@@ -668,11 +668,14 @@
 
 &uart6 {
 	/*
-	 * ★ 暂时保持 disabled：一旦 uart6 起来（哪怕只是个 tty），
-	 *   pcie-qcom 的 early power-on 就会在 pwrseq（qca6390-pmu）还没
-	 *   bind 好的时候拿到 -517，然后它不重试 —— 直接的后果就是
-	 *   "Phy link never came up" + wlan0 消失。等把 BT 的电源时序理顺
-	 *   再打开（见 docs/BLUETOOTH.md）。
+	 * 蓝牙链路（uart6 + bluetooth 节点 + pwrseq 的 BT_EN）已经全部验证能跑通：
+	 * hci0 出现、gpio21 被拉高、QCA6390 认出来了。但还有两个尾巴：
+	 *   1) 驱动默认去要 qca/htbtfw20.tlv，本机要用 hpbtfw21.tlv（已在
+	 *      bluetooth 节点里用 firmware-name 指定）；
+	 *   2) BT 一旦内建（CONFIG_BT=y 需要 CONFIG_RFKILL=y），rootfs 里那份
+	 *      旧 .ko 树就会冲突，ath11k 加载失败 -> WiFi 掉。
+	 * 所以先把 uart6 关掉保网络，等模块树同步（tools/push-modules.sh）之后
+	 * 再把这段打开、并 boot 验证。见 docs/BLUETOOTH.md。
 	 */
 	status = "disabled";
 };

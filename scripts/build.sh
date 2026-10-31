@@ -294,6 +294,37 @@ if [ "$badfrag" = 1 ]; then
 fi
 cat "$FRAG" >> "$OUT/.config"
 
+# ---- 必须内建的几项（=m 在 rootfs 里加载不了）----------------------------
+# rootfs 的 /lib/modules/6.12.94-umi-dirty 是旧构建留下的模块：版本串虽然
+# 对得上，ABI 却已经变了（modprobe hci_uart 报 "Exec format error"，
+# pwrseq_core 还会报 "exports duplicate symbol"）。所以蓝牙这条链只能内建。
+# 直接追加到 .config 末尾，确保不会被前面的片段覆盖。
+cat >> "$OUT/.config" <<'FORCEY'
+CONFIG_RFKILL=y
+CONFIG_RFKILL_INPUT=y
+CONFIG_BT=y
+CONFIG_BT_HCIUART=y
+CONFIG_BT_HCIUART_SERDEV=y
+CONFIG_BT_HCIUART_H4=y
+CONFIG_BT_HCIUART_QCA=y
+CONFIG_BT_QCA=y
+CONFIG_BT_HCIVHCI=y
+CONFIG_TYPEC=y
+CONFIG_TYPEC_TCPM=y
+CONFIG_TYPEC_TCPCI=y
+CONFIG_TYPEC_QCOM_PMIC=y
+CONFIG_TYPEC_MUX_FSA4480=y
+CONFIG_TYPEC_DP_ALTMODE=y
+CONFIG_USB_ROLE_SWITCH=y
+CONFIG_ZRAM=y
+CONFIG_ZSMALLOC=y
+CONFIG_ZRAM_DEF_COMP_ZSTD=y
+CONFIG_ZSTD_COMMON=y
+CONFIG_ZSTD_DECOMPRESS=y
+CONFIG_CRYPTO_ZSTD=y
+FORCEY
+echo "   强制内建: BT / TYPEC / ZRAM(zstd)"
+
 # ---- 内核版本名 ---------------------------------------------------------
 # ★ 这里是踩过的坑：rootfs 里的内核模块放在 /lib/modules/<版本串>/，而
 #   uname -r 改一个字，模块目录就对不上，那些 =m 的驱动（ath11k / qrtr /
