@@ -1,0 +1,3 @@
+# fastrpc device nodes: allow the fastrpc system user (hexagonrpcd) to open
+# them. Debian has no hexagonrpc package to ship this rule, unlike pmOS.
+SUBSYSTEM=="misc", KERNEL=="fastrpc-*", GROUP="fastrpc", MODE="0660"

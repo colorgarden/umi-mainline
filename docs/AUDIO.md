@@ -188,6 +188,42 @@ armbian 装的是 pmOS 那套 UCM2 配置：
 ★ 声卡 short name 是 **`X10`**（long name `Xiaomi Mi 10`），不同 alsa-lib 版本查的是不同的名字，
 所以两个符号链接都要建。没有 UCM，`wpctl` 里能看到 sink 但切 speaker/耳机/通话会失败。
 
+**原文已扒到 `contrib/alsa-ucm/`**，三个文件 + 一个通话拓扑服务：
+
+```
+contrib/alsa-ucm/Xiaomi Mi 10.conf      → /usr/share/alsa/ucm2/Xiaomi-Mi-10/
+contrib/alsa-ucm/HiFi.conf              （SectionVerb + 5 个 Device）
+contrib/alsa-ucm/VoiceCall.conf
+contrib/alsa-ucm/umi-voice-topology.service
+```
+
+HiFi 的 Device 名字（`wpctl`/`callaudiod` 靠这些名字）：
+
+| Device | 说明 |
+|--------|------|
+| `Speaker` | 内置双喇叭（CS35L41） |
+| `Earpiece` | 听筒（0x42 / LCV 前缀），`callaudiod` 通话时按名字选它 |
+| `Internal Mic` | 顶部麦 AMIC5（主语音麦） |
+| `Dual Mic` | AMIC5 顶 + AMIC1 底（AEC 参考）双麦 |
+| `Headset Mic` | 耳机麦 AMIC2（WCD ADC2/INP2） |
+
+### 5.2 通话拓扑要开机设一遍（`umi-voice-topology.service`）
+
+`q6cvp` 是**内建**的，没有 modprobe.d 能带参数，重启就丢。保留默认值时
+`bypass_topology` 会把收发都压成 `TOPOLOGY_ID_NONE` —— 通话**双向静音**。
+必须开机写：
+
+```sh
+printf N        > /sys/module/q6cvp/parameters/bypass_topology
+printf 0x00010f70 > /sys/module/q6cvp/parameters/tx_topology   # 发送用 NONE
+printf 0x1000feee > /sys/module/q6cvp/parameters/rx_topology   # 接收用板级自定义拓扑
+printf 1        > /sys/module/q6cvp/parameters/rx_channels
+```
+
+★ 收发故意不一样：自定义**发送**拓扑 `0x1000fffc` 是回声消除那条，
+它采的 16 kHz 输入在本板上实测恒为 0 —— 用它就"下行有声、上行全哑"。
+（以上是 armbian 在真机上踩出来的结论，不是理论推测。）
+
 ---
 
 ## 6. 落地顺序（建议）

@@ -64,21 +64,52 @@ CONFIG_ARM_SMMU / IOMMU 相关（已有）
 
 ## 2. 用户态（这是重点，内核只是一半）
 
-armbian 装了这些（Arch 上对应改名）：
+armbian 装了这些（Arch 上对应改名）。**原文已经扒到 `contrib/sensors/`**，
+下面表格里的文件名就是那边的文件名：
 
 | 组件 | 作用 | Arch 现状 |
 |------|------|-----------|
-| `hexagonrpcd`（他们打了个 umi 补丁版 `hexagonrpcd-umi`，带 apollo-sensor-fixes + rooted HexagonFS `-R` + PD 修复） | fastrpc 上的 RPC 守护，负责把 SSC 拉起来 | AUR 有 `hexagonrpc`；**需要打补丁** |
+| `hexagonrpcd`（他们打了个 umi 补丁版 `hexagonrpcd-umi`，带 apollo-sensor-fixes + rooted HexagonFS `-R` + PD 修复） | fastrpc 上的 RPC 守护，负责把 SSC 拉起来 | AUR 有 `hexagonrpc`；**必须打补丁** |
 | `chrecd` | CHRE（Context Hub Runtime Environment）守护，部分 sensor 走这条路 | 同仓库 |
 | `libhexagonrpc.so.0.4` | fastrpc 库 | 随 hexagonrpc |
 | `libssc` | SSC → IIO 的桥，注册 accelerometer/gyro/als 到 `/sys/bus/iio` | AUR `libssc-git` |
 | `iio-sensor-proxy` | IIO → D-Bus `net.hadess.SensorProxy`，Plasma 靠它自动旋转 | `community/iio-sensor-proxy` |
-| `hexagonrpcd-sdsp.service` + drop-in `10-umi.conf` | SLPI 那一路（`ConditionPathExists=/dev/fastrpc-sdsp`） | 要自己写 |
-| `hexagonrpcd-adsp-rootpd.service` / `hexagonrpcd-adsp-sensorspd.service` | ADSP 的两个 PD | 同上 |
-| `modules-load.d/umi-sensors.conf` | **fastrpc 必须先加载**，否则 sdsp 的 Condition 判不过 | 要自己写 |
-| udev `60-fastrpc-umi.rules` | `/dev/fastrpc-*` 给 `fastrpc` 组 | 要自己写 |
-| udev `81-libssc-xiaomi-umi.rules` | 加速度计 mount matrix（方向不对就翻车） | 要自己写，值需实测 |
+| `hexagonrpcd-sdsp.service` + drop-in `10-umi.conf` | SLPI 那一路 | 见 `contrib/sensors/` |
+| `hexagonrpcd-adsp-rootpd.service` / `hexagonrpcd-adsp-sensorspd.service` | ADSP 的两个 PD（它们带 `ConditionPathExists=!/dev/fastrpc-sdsp`，umi 上会自动跳过） | 同上 |
+| `modules-load.d/umi-sensors.conf` | **fastrpc 必须先加载**，否则 sdsp 的 Condition 判不过 | 同上 |
+| udev `60-fastrpc-umi.rules` | `/dev/fastrpc-*` → `GROUP="fastrpc", MODE="0660"` | 同上 |
+| udev `81-libssc-xiaomi-umi.rules` | 加速度计挂载矩阵 | 同上，值需实测 |
 | `pd-mapper`（linux-msm，交叉编译） | 让 ADSP 的 `avs/audio` PD 通过 PDR 广播 —— **音频也依赖它** | 无 AUR，需自己编 |
+
+★★ **不打 apollo-sensor-fixes 的 hexagonrpcd 会让 SLPI 每分钟崩溃约 25 次，
+并且把整机一起拖死**（他们的 README 原话）。这不是"没数据"级别的故障，
+是会 hang 的 —— 先打好补丁再上机。
+
+★ `ACCEL_MOUNT_MATRIX` 是打在 **`/dev/fastrpc-*` 这个 misc 设备**上的
+（libssc 从 udev 环境变量读），不是在 iio 设备上。起始值：
+
+```
+ENV{ACCEL_MOUNT_MATRIX}+="-1, 0, 0; 0, -1, 0; 0, 0, -1"
+```
+
+方向不对就改这 9 个数，别去改 libssc。
+
+### 2.0 sdsp 的 ExecStart（原始 unit + drop-in）
+
+```ini
+# hexagonrpcd-sdsp.service
+ConditionPathExists=/dev/fastrpc-sdsp
+ExecStart=/usr/local/bin/hexagonrpcd -f /dev/fastrpc-sdsp -d sdsp -s
+Restart=always
+User=fastrpc
+
+# hexagonrpcd-sdsp.service.d/10-umi.conf   ← 关键：-R 把 HexagonFS 根换掉
+[Service]
+ExecStart=
+ExecStart=/usr/bin/hexagonrpcd-umi -f /dev/fastrpc-sdsp -d sdsp -s -R /usr/share/qcom/sm8250/Xiaomi/umi
+```
+
+没有 `-R`，daemon 会去固件里找默认注册表路径，umi 的 sensor 一个都出不来。
 
 ### 2.1 启动顺序（抄他们的 Condition 逻辑）
 

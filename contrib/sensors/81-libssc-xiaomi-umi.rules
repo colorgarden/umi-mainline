@@ -1,0 +1,7 @@
+# iio-sensor-proxy with libssc: accelerometer mount matrix
+#
+# Starting value taken from the Mi 10T reference (royka1.s
+# Xiaomi-Apollo-pmOS-packages). Verify on the device — if the reported
+# accelerometer axes are rotated/flipped (e.g. monitor_iio_sensor_proxy or
+# `iio-sensor-proxy --debug`), adjust the 3x3 matrix here, not in libssc.
+SUBSYSTEM=="misc", KERNEL=="fastrpc-*", ENV{ACCEL_MOUNT_MATRIX}+="-1, 0, 0; 0, -1, 0; 0, 0, -1"
