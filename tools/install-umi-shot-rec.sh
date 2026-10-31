@@ -32,13 +32,27 @@ EOF
 echo "== /usr/local/bin/umi-rec"
 cat > /usr/local/bin/umi-rec <<'EOF'
 #!/bin/sh
-# 录屏开关：第一次调用开始，第二次调用停止并收尾保存
+# 录屏开关：
+#   umi-rec            第一次=开始，第二次=停止
+#   umi-rec status     看在不在录、最近的文件多大
+#   umi-rec stop       显式停止（等同再调一次）
 OUT="${1:-DSI-1}"
 DIR="${HOME:-/home/colorgarden}/Videos/Recordings"
 RUN="${XDG_RUNTIME_DIR:-/tmp}/umi-rec.pid"
 mkdir -p "$DIR"
 
-if [ -f "$RUN" ] && kill -0 "$(cat "$RUN" 2>/dev/null)" 2>/dev/null; then
+running() { [ -f "$RUN" ] && kill -0 "$(cat "$RUN" 2>/dev/null)" 2>/dev/null; }
+
+case "$OUT" in
+status)
+	running && echo "正在录屏（pid $(cat "$RUN")）" || echo "当前没有在录屏"
+	F=$(ls -t "$DIR"/*.mp4 2>/dev/null | head -1)
+	[ -n "$F" ] && ls -lh "$F" | awk '{print "最近的文件: " $NF "  (" $5 ")"}'
+	exit 0 ;;
+stop) ;;
+esac
+
+if running; then
 	kill -INT "$(cat "$RUN")"
 	rm -f "$RUN"
 	echo "停止录屏（文件已收尾）"
