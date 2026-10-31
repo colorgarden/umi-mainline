@@ -667,18 +667,14 @@
 };
 
 &uart6 {
-	status = "okay";
-
-	bluetooth {
-		compatible = "qcom,qca6390-bt";
-		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
-		vddaon-supply = <&vreg_pmu_aon_0p59>;
-		vddbtcmx-supply = <&vreg_pmu_btcmx_0p85>;
-		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
-		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
-		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
-		max-speed = <3200000>;
-	};
+	/*
+	 * ★ 暂时保持 disabled：一旦 uart6 起来（哪怕只是个 tty），
+	 *   pcie-qcom 的 early power-on 就会在 pwrseq（qca6390-pmu）还没
+	 *   bind 好的时候拿到 -517，然后它不重试 —— 直接的后果就是
+	 *   "Phy link never came up" + wlan0 消失。等把 BT 的电源时序理顺
+	 *   再打开（见 docs/BLUETOOTH.md）。
+	 */
+	status = "disabled";
 };
 
 /* ---------------------------------------------------------------- Type-C / 充电 */

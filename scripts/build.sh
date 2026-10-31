@@ -294,37 +294,22 @@ if [ "$badfrag" = 1 ]; then
 fi
 cat "$FRAG" >> "$OUT/.config"
 
-# ---- 内核版本名：6.12.94-umi-<UTC 精确到秒>-<4 位十六进制随机> -------------
-# 每次构建都不一样，方便在手机上用 `uname -r` 直接确认跑的是哪一版镜像。
-# 同时关掉 LOCALVERSION_AUTO，否则 git 树有改动会再被追加 "-dirty"。
-UNAME_TS=$(date -u +%Y%m%dT%H%M%SZ)
-UNAME_RND=$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')
-{
-	echo "CONFIG_LOCALVERSION=\"-umi-${UNAME_TS}-${UNAME_RND}\""
-	echo '# CONFIG_LOCALVERSION_AUTO is not set'
-} >> "$OUT/.config"
-echo "   LOCALVERSION: -umi-${UNAME_TS}-${UNAME_RND}"
-
-# 版本串是由 scripts/setlocalversion 生成的：它会 `git describe --dirty`，
-# 而我们的构建流程每次都往核树里拷 DTS / 驱动源码，树永远是 dirty 的，
-# 于是版本号后面总跟着 "-dirty"。这里把它换成一个只读 CONFIG_LOCALVERSION
-# 的小脚本，版本串就完全由上面那行决定。
-if [ "${NO_SCM_STUB:-0}" != "1" ]; then
-	cat > "$TREE/scripts/setlocalversion" <<'SETLOCAL'
-#!/bin/sh
-# umi: 输出完整 release = <内核版本> + CONFIG_LOCALVERSION
-# （build.sh 每次写新的 -umi-<UTC 到秒>-<4 位十六进制随机>）。
-# 原来的脚本会跑 `git describe --dirty`，而构建流程每次都往核树里拷
-# DTS/驱动源码，树永远是 dirty 的，版本号后面就总多一个 "-dirty"。
-srctree=${1:-.}
-v=$(sed -n 's/^VERSION = //p'        "$srctree/Makefile" | head -1)
-p=$(sed -n 's/^PATCHLEVEL = //p'     "$srctree/Makefile" | head -1)
-s=$(sed -n 's/^SUBLEVEL = //p'       "$srctree/Makefile" | head -1)
-e=$(sed -n 's/^EXTRAVERSION = //p'   "$srctree/Makefile" | head -1)
-loc=$(sed -n 's/^CONFIG_LOCALVERSION="\([^"]*\)"$/\1/p' ./.config 2>/dev/null)
-printf '%s.%s.%s%s%s\n' "$v" "$p" "$s" "$e" "$loc"
-SETLOCAL
-	chmod +x "$TREE/scripts/setlocalversion"
+# ---- 内核版本名 ---------------------------------------------------------
+# ★ 这里是踩过的坑：rootfs 里的内核模块放在 /lib/modules/<版本串>/，而
+#   uname -r 改一个字，模块目录就对不上，那些 =m 的驱动（ath11k / qrtr /
+#   mhi …）一个都加载不了 —— 表现就是 WiFi 直接消失。
+#
+#   所以版本串保持稳定：<6.12.94>-umi-<dirty 由 setlocalversion 决定>。
+#   想在手机上分辨是哪一版镜像，看 /proc/version 里的构建时间戳和
+#   KBUILD_BUILD_USER=colorgarden 就够了。
+#
+#   （要把版本串做成 -umi-<UTC>-<rand> 这种唯一值，得同时把每个版本对应的
+#    .ko 一起装进 rootfs —— 见 tools/push-modules.sh，暂不做。）
+if [ "${UNIQUE_LOCALVERSION:-0}" = "1" ]; then
+	UNAME_TS=$(date -u +%Y%m%dT%H%M%SZ)
+	UNAME_RND=$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')
+	echo "CONFIG_LOCALVERSION=\"-umi-${UNAME_TS}-${UNAME_RND}\"" >> "$OUT/.config"
+	echo "   LOCALVERSION: -umi-${UNAME_TS}-${UNAME_RND}（注意：模块目录需同步）"
 fi
 
 # TOUCH=stfts：换掉 umi.config 里的主线触摸选项（后写的覆盖前面的）
