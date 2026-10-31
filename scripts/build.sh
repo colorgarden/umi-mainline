@@ -26,6 +26,12 @@ llvm) MAKEFLAGS_TC="ARCH=arm64 LLVM=1" ;;
 *) echo "TC 只能是 gcc 或 llvm"; exit 1 ;;
 esac
 
+# ---- 构建者署名：`uname -v` 里 "…#N SMP PREEMPT <user@host> <时间>" -----------
+# 默认会写 root@<容器 hostname>；这里固定成 colorgarden，任何人都能从
+# `uname -v` 看出这张镜像是谁编的。
+export KBUILD_BUILD_USER=colorgarden
+export KBUILD_BUILD_HOST=umi-mainline
+
 # ---- Rust 工具链（drm_panic 的二维码生成器是 Rust 写的）----
 # 需要三样：rustc（版本别太新，用和 6.12 同期的 1.82）、bindgen、libclang（bindgen 靠它解析 C 头）
 # 缺 libclang 的话 bindgen 会报 "Unable to find libclang" —— Alpine 里要装 clang22-libclang
@@ -287,6 +293,40 @@ if [ "$badfrag" = 1 ]; then
 	exit 2
 fi
 cat "$FRAG" >> "$OUT/.config"
+
+# ---- 内核版本名：6.12.94-umi-<UTC 精确到秒>-<4 位十六进制随机> -------------
+# 每次构建都不一样，方便在手机上用 `uname -r` 直接确认跑的是哪一版镜像。
+# 同时关掉 LOCALVERSION_AUTO，否则 git 树有改动会再被追加 "-dirty"。
+UNAME_TS=$(date -u +%Y%m%dT%H%M%SZ)
+UNAME_RND=$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')
+{
+	echo "CONFIG_LOCALVERSION=\"-umi-${UNAME_TS}-${UNAME_RND}\""
+	echo '# CONFIG_LOCALVERSION_AUTO is not set'
+} >> "$OUT/.config"
+echo "   LOCALVERSION: -umi-${UNAME_TS}-${UNAME_RND}"
+
+# 版本串是由 scripts/setlocalversion 生成的：它会 `git describe --dirty`，
+# 而我们的构建流程每次都往核树里拷 DTS / 驱动源码，树永远是 dirty 的，
+# 于是版本号后面总跟着 "-dirty"。这里把它换成一个只读 CONFIG_LOCALVERSION
+# 的小脚本，版本串就完全由上面那行决定。
+if [ "${NO_SCM_STUB:-0}" != "1" ]; then
+	cat > "$TREE/scripts/setlocalversion" <<'SETLOCAL'
+#!/bin/sh
+# umi: 输出完整 release = <内核版本> + CONFIG_LOCALVERSION
+# （build.sh 每次写新的 -umi-<UTC 到秒>-<4 位十六进制随机>）。
+# 原来的脚本会跑 `git describe --dirty`，而构建流程每次都往核树里拷
+# DTS/驱动源码，树永远是 dirty 的，版本号后面就总多一个 "-dirty"。
+srctree=${1:-.}
+v=$(sed -n 's/^VERSION = //p'        "$srctree/Makefile" | head -1)
+p=$(sed -n 's/^PATCHLEVEL = //p'     "$srctree/Makefile" | head -1)
+s=$(sed -n 's/^SUBLEVEL = //p'       "$srctree/Makefile" | head -1)
+e=$(sed -n 's/^EXTRAVERSION = //p'   "$srctree/Makefile" | head -1)
+loc=$(sed -n 's/^CONFIG_LOCALVERSION="\([^"]*\)"$/\1/p' ./.config 2>/dev/null)
+printf '%s.%s.%s%s%s\n' "$v" "$p" "$s" "$e" "$loc"
+SETLOCAL
+	chmod +x "$TREE/scripts/setlocalversion"
+fi
+
 # TOUCH=stfts：换掉 umi.config 里的主线触摸选项（后写的覆盖前面的）
 if [ "${TOUCH_SEL:-fts521}" = stfts ]; then
 	{

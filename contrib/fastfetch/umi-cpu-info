@@ -1,0 +1,25 @@
+#!/bin/sh
+# umi-cpu-info — 给 fastfetch 用：把 SM8250 报成 Snapdragon 865，并带上真实频率。
+#
+# 为什么需要它：fastfetch 在 Linux 上把 /proc/cpuinfo 的 "model name" 或
+# device-tree 的 /model 拿来当 CPU 名，而我们的 DT model 是
+# "Qualcomm Technologies, Inc. xiaomi umi"、机器名 "mtp"，于是它显示 "mtp (8)"。
+#
+# 频率来源：优先 /sys/devices/system/cpu/cpuN/cpufreq/cpuinfo_max_freq。
+# 这台机器上 cpufreq-dt 还在 deferred probe（见 /sys/kernel/debug/devices_deferred），
+# 所以读不到时就退回 SM8250 的标称频率。
+
+clk() {
+	f=/sys/devices/system/cpu/cpu$1/cpufreq/cpuinfo_max_freq
+	if [ -r "$f" ]; then
+		echo $(( $(cat "$f") / 1000 ))
+	else
+		echo "$2"
+	fi
+}
+
+p1=$(clk 0 2841)     # 1× Cortex-A77 @2.84 GHz
+p2=$(clk 4 2419)     # 3× Cortex-A77 @2.42 GHz
+p3=$(clk 7 1804)     # 4× Cortex-A55 @1.80 GHz
+
+printf 'Snapdragon 865 (SM8250) — 8C: 1×%s + 3×%s + 4×%s MHz' "$p1" "$p2" "$p3"

@@ -313,22 +313,14 @@ struct fts_ts_info {
 	int resume_bit;
 
 	/*
-	 * water-mode 看门狗
-	 * -----------------
-	 * 这块屏上的固件偶尔会卡在 Enter/Exit Water mode 里反复横跳（实测每
-	 * ~300 ms 一对、每秒约 4~5 个状态事件），这时它**一个触摸事件都不再
-	 * 上报**，触摸看起来就是“用几分钟后彻底没反应”，只有 sysreset +
-	 * panel init 能解开（reboot 也能，但没必要）。
-	 *
-	 * 这里分别统计“水模式状态事件”和“触摸事件”，由 fts_water_wd_work()
-	 * 每 3 秒比一次：水事件很多而触摸事件为 0，就认为固件卡住了。
+	 * IRQ 看门狗
+	 * ----------
+	 * fts_system_reset() 内部会 fts_disableInterruptNoSync()，必须靠调用方
+	 * 再调 fts_enableInterrupt() 才会把内核 IRQ 放回来。历史上踩过
+	 * “复位完 IRQ 一直关着 → gpio39 一直低但 /proc/interrupts 不涨”的坑，
+	 * 由 fts_irq_wd_work() 每 1 秒兜一次底。
 	 */
-	struct delayed_work water_wd_work;
-	atomic_t water_wd_events;
-	atomic_t water_wd_touch;
-	int water_wd_last_water;
-	int water_wd_last_touch;
-	unsigned long water_wd_last_reset;
+	struct delayed_work irq_wd_work;
 	int fwupdate_stat;
 
 	struct notifier_block notifier;

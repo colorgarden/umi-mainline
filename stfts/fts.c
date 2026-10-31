@@ -148,7 +148,7 @@ struct fts_ts_info *fts_info;
 
 static int fts_init_sensing(struct fts_ts_info *info);
 static int fts_mode_handler(struct fts_ts_info *info, int force);
-static void fts_water_wd_work(struct work_struct *work);
+static void fts_irq_wd_work(struct work_struct *work);
 static int fts_chip_initialization(struct fts_ts_info *info, int init_type);
 static const char *fts_get_limit(struct fts_ts_info *info);
 static irqreturn_t fts_event_handler(int irq, void *ts_info);
@@ -3582,20 +3582,18 @@ static void fts_status_event_handler(struct fts_ts_info *info,
 		break;
 
 	case EVT_TYPE_STATUS_WATER:
-		atomic_inc(&info->water_wd_events);
 		/*
-		 * 这条事件在固件抽风时每秒来好几个，把 dmesg 刷满、把别的
-		 * 日志挤掉，所以只在 DEBUG 下打印（logError(0,..)）。
-		 * 正常/异常都由 fts_water_wd_work() 的 "water-mode latch"
-		 * 那行汇总，不需要逐条看。
+		 * 修好 CX 之后正常使用期间这条事件是 0；偶尔出现说明手上/面板
+		 * 真有点潮，属于固件正常保护，不需要驱动做什么。保持 logError(1)
+		 * 以便出问题时能在 dmesg 里看到（真进水时也不会持续刷屏）。
 		 */
 		if (event[2] == 1)
-			logError(0,
+			logError(1,
 				 "%s %s Enter Water mode = %02X %02X %02X %02X %02X %02X\n",
 				 tag, __func__, event[2], event[3], event[4],
 				 event[5], event[6], event[7]);
 		else
-			logError(0,
+			logError(1,
 				 "%s %s Exit Water mode = %02X %02X %02X %02X %02X %02X\n",
 				 tag, __func__, event[2], event[3], event[4],
 				 event[5], event[6], event[7]);
@@ -4006,14 +4004,6 @@ static void fts_ts_sleep_work(struct work_struct *work)
 			if (eventId < NUM_EVT_ID) {
 				event_handler = info->event_dispatch_table[eventId];
 				event_handler(info, (evt_data));
-				/*
-				 * 统计真实触摸事件（进点/移动），给 water-mode 看门狗用。
-				 * 注意 install_handler 里的 ENTER_POINT 是给 token paste 用的，
-				 * 不是独立标识符，这里必须用 EVT_ID_*。
-				 */
-				if (eventId == (EVT_ID_ENTER_POINT >> 4) ||
-				    eventId == (EVT_ID_MOTION_POINT >> 4))
-					atomic_inc(&info->water_wd_touch);
 				pre_id[0] = evt_data[0];
 				pre_id[1] = evt_data[1];
 				pre_id[2] = evt_data[2];
@@ -4097,14 +4087,6 @@ static irqreturn_t fts_event_handler(int irq, void *ts_info)
 			if (eventId < NUM_EVT_ID) {
 				event_handler = info->event_dispatch_table[eventId];
 				event_handler(info, (evt_data));
-				/*
-				 * 统计真实触摸事件（进点/移动），给 water-mode 看门狗用。
-				 * 注意 install_handler 里的 ENTER_POINT 是给 token paste 用的，
-				 * 不是独立标识符，这里必须用 EVT_ID_*。
-				 */
-				if (eventId == (EVT_ID_ENTER_POINT >> 4) ||
-				    eventId == (EVT_ID_MOTION_POINT >> 4))
-					atomic_inc(&info->water_wd_touch);
 				pre_id[0] = evt_data[0];
 				pre_id[1] = evt_data[1];
 				pre_id[2] = evt_data[2];
@@ -4117,47 +4099,29 @@ static irqreturn_t fts_event_handler(int irq, void *ts_info)
 }
 
 /**
- * water-mode 看门狗（= 把固件的“水模式”从用户视野里删掉）
+ * IRQ 看门狗：只在“IRQ 被压着没配对 enable”时把它放出来。
  *
- * 现象（实测）：固件会卡在 Enter/Exit Water mode 里反复横跳——60 秒里
- * 324 个中断全是水模式状态事件、触摸事件 0 个，用户侧表现就是“用几分钟
- * 后触摸彻底没了”。kernel 这边看不出任何错误（Sense 仍是 ON，i2c 也正常），
- * 只有 sysreset + panel init 能解开（`echo '51 02' > /proc/fts/driver_test`
- * 能当场复原，这就是本函数做的事）。
+ * 现场：gpio39 一直低（固件有事件待读）、/proc/interrupts 不涨、
+ * /proc/irq/N/spurious=0、irq/183-fts 线程安安静静睡着 —— 也就是
+ * disable_irq() 过、但配对的 enable_irq() 没执行。
+ * fts_system_reset() 内部会 fts_disableInterruptNoSync()，如果复位之后某步
+ * 失败、或者调用者（比如 /proc/fts/driver_test 的 `51 02`）忘了调
+ * fts_enableInterrupt()，IRQ 就再也不上天了。
  *
- * 关键观察：**正常使用期间水模式事件是 0**（上一版 boot 里前 470 秒一个都
- * 没有，之后突然开始每秒 ~5 个）。所以判据可以狠狠收紧：1 秒窗口里只要有
- * 2 个水模式事件、且这段时间没有任何触摸事件，就认定固件又开始抽风，立刻
- * sysreset + panel init。相当于对用户来说“水模式不存在”。
+ * 这里只要发现“屏幕亮着、不在复位过程中、却还压着 IRQ”，直接
+ * fts_enableInterrupt() 把它放出来：电平触发的中断会立刻进来，处理函数把
+ * FIFO 读空，触摸当场恢复（不用复位、不掉帧）。
  *
- * 冷却 10 s 防止：万一真进水/手上带水导致事件持续，也不会变成死循环，
- * 每 10 秒才允许复位一次。
+ * 注：曾经这里还有一个 water-mode 看门狗（固件卡在 Enter/Exit Water mode
+ * 反复横跳时复位它）。那是“CX 无效导致自容读数为负”的症状，真正的修法在
+ * fts_fw_update() 里强制 full panel init（见 docs/TOUCH.md §17），修好之后
+ * 水模式事件恒为 0，看门狗已删。
  */
-static void fts_water_wd_work(struct work_struct *work)
+static void fts_irq_wd_work(struct work_struct *work)
 {
 	struct fts_ts_info *info =
-	    container_of(work, struct fts_ts_info, water_wd_work.work);
-	int water = atomic_read(&info->water_wd_events);
-	int touch = atomic_read(&info->water_wd_touch);
-	int dwater = water - info->water_wd_last_water;
-	int dtouch = touch - info->water_wd_last_touch;
+	    container_of(work, struct fts_ts_info, irq_wd_work.work);
 
-	info->water_wd_last_water = water;
-	info->water_wd_last_touch = touch;
-
-	/*
-	 * 失效模式二：IRQ 被压着没配对 enable。
-	 *
-	 * 现场：gpio39 一直低（固件有事件待读）、/proc/interrupts 不涨、
-	 * spurious=0、irq/183-fts 线程安安静静睡着 —— 也就是 disable_irq()
-	 * 过、但配对的 enable_irq() 没执行。fts_system_reset() 内部会
-	 * fts_disableInterruptNoSync()，如果复位之后某步失败/或者调用者忘了
-	 * 调 fts_enableInterrupt()，IRQ 就再也不上天了。
-	 *
-	 * 这里只要发现“屏幕亮着、不在复位过程中、却还压着 IRQ”，直接
-	 * fts_enableInterrupt() 把它放出来：电平触发的中断会立刻进来，
-	 * 处理函数把 FIFO 读空，触摸当场恢复（不用 reset，不掉帧）。
-	 */
 	if (info->resume_bit && !atomic_read(&info->system_is_resetting) &&
 	    fts_is_interrupt_disabled()) {
 		logError(1, "%s %s: IRQ left disabled -> re-enabling\n",
@@ -4165,25 +4129,7 @@ static void fts_water_wd_work(struct work_struct *work)
 		fts_enableInterrupt();
 	}
 
-	if (info->resume_bit && dwater >= 2 && dtouch == 0 &&
-	    time_after(jiffies, info->water_wd_last_reset + 10 * HZ)) {
-		logError(1,
-			 "%s %s: water-mode latch (water +%d, touch +%d) -> sysreset + sense on\n",
-			 tag, __func__, dwater, dtouch);
-		info->water_wd_last_reset = jiffies;
-		/*
-		 * 复位的正确姿势（抄 ESD 错误处理那条路，别抄 proc 的
-		 * production_test_initialization：那条路复位完不会把内核 IRQ
-		 * 放回来，而且 fts_init_sensing() 会再 request_threaded_irq
-		 * 一次，第二次必然 -EBUSY，结果就是“复位完彻底没触摸”）。
-		 */
-		release_all_touches(info);
-		fts_system_reset();
-		fts_mode_handler(info, 0);
-		fts_enableInterrupt();
-	}
-
-	schedule_delayed_work(&info->water_wd_work, msecs_to_jiffies(1000));
+	schedule_delayed_work(&info->irq_wd_work, msecs_to_jiffies(1000));
 }
 
 /**@}*/
@@ -6362,13 +6308,8 @@ static int fts_probe(struct spi_device *client)
 #endif
 	info->sensor_scan = true;
 
-	/* water-mode 看门狗：3 秒一轮，见 fts_water_wd_work() */
-	atomic_set(&info->water_wd_events, 0);
-	atomic_set(&info->water_wd_touch, 0);
-	info->water_wd_last_water = 0;
-	info->water_wd_last_touch = 0;
-	info->water_wd_last_reset = jiffies - 10 * HZ;
-	INIT_DELAYED_WORK(&info->water_wd_work, fts_water_wd_work);
+	/* IRQ 看门狗（1 秒一轮，只在 IRQ 被压着没配对 enable 时动手） */
+	INIT_DELAYED_WORK(&info->irq_wd_work, fts_irq_wd_work);
 
 	logError(0, "%s SET Device File Nodes: \n", tag);
 	/* sysfs stuff */
@@ -6457,7 +6398,7 @@ static int fts_probe(struct spi_device *client)
 #endif
 
 	logError(1, "%s Probe Finished! \n", tag);
-	schedule_delayed_work(&info->water_wd_work, msecs_to_jiffies(5000));
+	schedule_delayed_work(&info->irq_wd_work, msecs_to_jiffies(5000));
 	return OK;
 ProbeErrorExit_8:
 	device_destroy(info->fts_tp_class, 0x49);
@@ -6519,7 +6460,7 @@ static int fts_remove(struct spi_device *client)
 
 	struct fts_ts_info *info = dev_get_drvdata(&(client->dev));
 
-	cancel_delayed_work_sync(&info->water_wd_work);
+	cancel_delayed_work_sync(&info->irq_wd_work);
 	fts_proc_remove();
 	/* sysfs stuff */
 	sysfs_remove_group(&client->dev.kobj, &info->attrs);

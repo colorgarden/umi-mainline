@@ -643,10 +643,72 @@
 	status = "okay";
 };
 
+/*
+ * 蓝牙：QCA6390 走 uart6（geniqup@9c0000 / qupv3_id_1 下的 serial@998000）。
+ *
+ * ★ 这段以前写在 sm8250-xiaomi-umi.dts 里，但真正编进镜像的是
+ *   sm8250-xiaomi-umi-wifi.dts，它只 include 了 common.dtsi —— 于是
+ *   uart6 一直是 disabled、bluetooth 节点根本不存在，BT 当然起不来。
+ *   现在放到 common.dtsi，所有变体都能用。
+ *
+ * ★★ 还必须给 uart6 一个 serial alias：qcom_geni_serial 用
+ *   of_alias_get_id(np, "serial") 取端口号，取不到就 -ENODEV
+ *   （dmesg: "qcom_geni_serial 998000.serial: Invalid line -19"）。
+ *   更麻烦的是：这个没绑上的 uart6 会让 qnoc/interconnect 的
+ *   sync_state() 一直 pending，把它当 consumer 的 **pcie0 就被拖住不 probe**
+ *   —— 表现就是“蓝牙没起来，WiFi 也没了”。
+ *
+ * 固件在 linux-firmware 里：qca/hpbtfw21.tlv（patchram）+ qca/hpnv21.bin。
+ */
+/ {
+	aliases {
+		serial1 = &uart6;
+	};
+};
+
+&uart6 {
+	status = "okay";
+
+	bluetooth {
+		compatible = "qcom,qca6390-bt";
+		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
+		vddaon-supply = <&vreg_pmu_aon_0p59>;
+		vddbtcmx-supply = <&vreg_pmu_btcmx_0p85>;
+		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
+		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
+		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
+		max-speed = <3200000>;
+	};
+};
+
 /* ---------------------------------------------------------------- Type-C / 充电 */
+/*
+ * PM8150B 自带的 typec 控制器（TCPM）+ USB-C connector。
+ *
+ * 厂商 DT 里还挂了 displayport altmode、以及 fsa4480（SBU/音频 switch），
+ * 那些依赖 DSI/USB PHY 的 crossbar 对接，等 DP over USB-C 真正做的时候再加；
+ * 现在先把「插拔 / 角色 / PD 协商」这条最常用的路走通。
+ */
 &pm8150b_typec {
 	vdd-pdphy-supply = <&vreg_l2a_3p1>;
 	status = "okay";
+
+	connector {
+		compatible = "usb-c-connector";
+		label = "USB-C";
+		op-sink-microwatt = <10000000>;
+		/*
+		 * 现在只做 sink（充电 + PD 协商）：我们的 dwc3 是 peripheral-only，
+		 * 没有 role switch 可切；dual-role / DP altmode 需要先接上
+		 * usb_1_qmpphy 和 fsa4480，等那条线做完再打开。
+		 */
+		power-role = "sink";
+		self-powered;
+		vbus-supply = <&pm8150b_vbus>;
+
+		sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_USB_COMM)
+			     PDO_VAR(5000, 12000, 5000)>;
+	};
 };
 
 &pm8150b_vbus {
