@@ -109,3 +109,28 @@ tools/install-wlroots-pkg.sh    # pacman -U + 设 IgnorePkg + 重启会话
 exec /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasmamobile
 # 或者直接把 ~/.bash_profile 换成 .bash_profile.before-phosh
 ```
+
+## 6. 截屏 / 录屏
+
+Phosh 跑在 phoc（wlroots）上，phoc 提供 zwlr_screencopy_manager_v1，
+所以直接用 wlroots 那套工具（	ools/install-umi-shot-rec.sh 一次装好）：
+
+| 操作 | 命令 | 结果 |
+|------|------|------|
+| 截屏 | umi-shot | ~/Pictures/Screenshots/shot-YYYYmmdd-HHMMSS.png（1080x2340） |
+| 录屏 | umi-rec 第一次 = 开始，第二次 = 停止 | ~/Videos/Recordings/rec-*.mp4 |
+
+应用网格里也放了「截屏」「录屏」两个图标（/usr/share/applications/umi-{shot,rec}.desktop）。
+
+底层指令（想自己调参时）：
+
+`sh
+grim -o DSI-1 out.png                                  # 截屏
+wf-recorder -o DSI-1 -D -f out.mp4 -c libx264 \
+    -p preset=ultrafast -p crf=28 -r 30                # 录屏
+`
+
+★ **一定要 -D**：不加它 wf-recorder 只在画面变化时向合成器要帧，
+手机屏幕经常是静态的 → 录出来可能只有几百字节。
+★ 没有硬件编码：Adreno 650 没有 VAAPI 编码器（v4l2 那条主线还没接），
+只能 CPU x264；ultrafast + crf28 + 30fps 在 SD865 上实测够用（约 33 KB/s 静态画面）。
