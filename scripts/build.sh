@@ -322,8 +322,18 @@ CONFIG_ZRAM_DEF_COMP_ZSTD=y
 CONFIG_ZSTD_COMMON=y
 CONFIG_ZSTD_DECOMPRESS=y
 CONFIG_CRYPTO_ZSTD=y
+# ---- 音频：喇叭用两颗 CS35L41（I2C），耳机/耳麦走 WCD938x（SoundWire） ----
+# 其余 SND_SOC_* 来自 defconfig（snd-soc-sm8250 / wcd938x / lpass macros /
+# soundwire-qcom 都已经是 =m），这里只补缺的 CS35L41 与几个必需的 codec 依赖。
+CONFIG_SND_SOC_CS35L41=m
+CONFIG_SND_SOC_CS35L41_I2C=m
+CONFIG_SND_SOC_CS35L41_LIBRARY=m
+CONFIG_SND_SOC_DMIC=m
+CONFIG_SND_SOC_SIMPLE_AMPLIFIER=m
+CONFIG_SND_SIMPLE_CARD=m
+CONFIG_SND_PCM_DMAENGINE=y
 FORCEY
-echo "   强制内建: BT / TYPEC / ZRAM(zstd)"
+echo "   强制内建: BT / TYPEC / ZRAM(zstd) / 补音频 CS35L41"
 
 # ---- 内核版本名 ---------------------------------------------------------
 # ★ 这里是踩过的坑：rootfs 里的内核模块放在 /lib/modules/<版本串>/，而
