@@ -34,36 +34,38 @@
 （`grep media_device|MEDIA_IOC_REQUEST|SUPPORTS_REQUESTS drivers/media/platform/qcom/venus/` 为空），
 所以它是 **stateful V4L2 M2M**，必须两端成对用：OUTPUT 喂码流、CAPTURE 收 NV12。
 
-### 3.0 已经做成「默认硬解」（ffmpeg / ffplay 包装层）
+### 3.0 播放器场景：GStreamer 自动硬解（不需要任何包装）
 
-ffmpeg 没有「默认解码器」这种配置项，所以在 PATH 里（`/usr/bin` 之前）顶了一层包装：
+★ **实测纠正**（2026-11-01 第二轮）：`v4l2h264dec`（GStreamer stateful）**本来就在用 Venus**。
+之前用「墙钟时间」判断说它回落软解是错的 —— 判据必须是 **venus 中断计数 + CPU 时间**：
 
 ```
-contrib/ffmpeg-wrapper/ffmpeg   -> /usr/local/bin/ffmpeg
-contrib/ffmpeg-wrapper/ffplay   -> /usr/local/bin/ffplay
+gst-launch-1.0 filesrc ! qtdemux ! h264parse ! v4l2h264dec ! fakesink   → venus 中断 +371
+gst-launch-1.0 filesrc ! qtdemux ! h264parse ! avdec_h264   ! fakesink   → venus 中断 +0
+ffmpeg -c:v h264_v4l2m2m ...                                            → venus 中断 +440
 ```
 
-行为：
+`playbin`（也就是所有 GStreamer 应用：clapper / totem / Phosh 播放器）会自动选它：
 
-1. 找第一个 `-i` 的输入（ffplay 取第一个真实存在的文件），用 `ffprobe` 看编码；
-2. 有对应的 `*_v4l2m2m`，就在 `-i` **之前**插 `-c:v <dec>`
-   （`-c:v` 只有放在 `-i` 前才作用于「输入解码」，输出的 `-c:v libx264` 不受影响）；
-3. **硬解失败自动回退软解**（非 0 退出就用原始参数重跑）——
-   硬解遇到异常 profile / 超大分辨率会硬失败，不能让视频因此打不开；
-4. 信息类调用（`-version` / `-decoders` / …）和用户已经显式写了 `-c:v` 的命令**原样透传**。
-
-```sh
-ffmpeg -i in.mp4 out.mp4                    # 自动硬解 + 软编
-ffplay in.mp4                               # 自动硬解播放
-umi-play in.mp4                             # 等价（自带 codec 探测）
-
-UMI_FFMPEG_SOFTWARE=1 ffplay in.mp4         # 临时强制软解
-UMI_FFMPEG_WRAPPER_DEBUG=1 ffplay in.mp4    # 打印最终 argv（排错）
+```
+decodebin0/v4l2h264dec  (rank 257)  >  avdec_h264 (rank 256)
+输出 caps: video/x-raw(memory:DMABuf), format=DMA_DRM, drm-format=NV12
+venus 中断增量 +371
 ```
 
-实测（1080p H.264，2 秒）：默认路径 venus 中断 **+87**；`UMI_FFMPEG_SOFTWARE=1` 时 **+0**。
+所以：
 
-### 3.1 手工指定解码器（不走包装时）
+| 播放器 | 是否硬解 | 说明 |
+|--------|----------|------|
+| **clapper**（已装 `extra/clapper`） | ✅ 自动 | GStreamer 播放器，直接吃到 Venus |
+| totem / 其他 GStreamer 应用 | ✅ 自动 | 同上 |
+| ffplay | ⚠️ 需手动 | `umi-play in.mp4` 或 `ffplay -vcodec h264_v4l2m2m in.mp4` |
+| **mpv** | ❌ 不行 | 这个构建的 `--hwdec` 只有 vaapi/vulkan/vdpau，没有 v4l2m2m |
+
+> 曾经在 `/usr/local/bin` 上做过 ffmpeg/ffplay 的「默认插解码器」包装层，
+> 因为 mpv/GStreamer 才是主战场且 GStreamer 已自动硬解，**已回退**。
+
+### 3.1 手工指定解码器（ffmpeg）
 
 ```sh
 ffmpeg -c:v h264_v4l2m2m -i in.mp4 -f null -        # 解码（H.264）
@@ -94,31 +96,34 @@ ffmpeg -i in.mp4 -c:v h264_v4l2m2m -b:v 8M out.mp4     # 走 /dev/video1
 | `ffmpeg -hwaccel drm` | `Unsupported` / 回落软解 | FFmpeg 的 **V4L2 stateless request API** 从来没进主线（Bootlin 的补丁集），Arch 的 ffmpeg 没有 |
 | mpv `--hwdec=drm` / `--hwdec=v4l2m2m` | `Unsupported hwdec` | 同上；这个 mpv 构建只带 vaapi/vulkan/vdpau |
 | GStreamer `v4l2slh264dec`（stateless） | 插件 `0 features` | venus 不是 stateless，`v4l2codecs` 插件找不到带 request API 的设备 |
-| GStreamer `v4l2h264dec`（stateful） | 静默回落 `avdec_h264` | 见下 |
+| GStreamer `v4l2h264dec`（stateful） | **✅ 可用** | 见 §3.0；之前说"回落"是判据错了 |
 
-### 4.1 `v4l2h264dec` 为什么会回落（还没啃完）
+### 4.1 关于 stateless request API
 
-`gst-inspect` 能看到设备（`Probing 'Qualcomm Venus video decoder' /dev/video0`，
-输出格式 flags `0x9` = COMPRESSED|DYN_RESOLUTION），caps 也能协商成
-`byte-stream, alignment=au`，但实际跑到 1.19s（= 软解耗时），Venus 零中断。
+**不是"修一下"就能有的**：主线 venus 驱动里根本没有 media controller / request 实现
+（`grep 'media_device|MEDIA_IOC_REQUEST|SUPPORTS_REQUESTS' drivers/media/platform/qcom/venus/*.c` 为空），
+它自 5.x 起就是 stateful M2M。
 
-要排查的话从这里下手：
+要让 stateless "可用"，等于**给 venus 写一条全新的解码路径**：
 
-```sh
-GST_DEBUG='v4l2*:7' gst-launch-1.0 -v filesrc location=in.mp4 ! qtdemux \
-    ! h264parse ! v4l2h264dec ! fakesink sync=false 2>&1 | grep -iE 'error|negotiat|buffer|format'
-```
+1. 注册 media device / media controller 实体
+2. 为每个 buffer 分配 `MEDIA_IOC_REQUEST_ALLOC` + 绑定 request fd
+3. 实现 H.264/HEVC/VP9 的 stateless codec controls（slice params、DPB、参考帧列表…）
+4. 改 HFI 会话：stateful 是"喂码流让固件解析"，stateless 是"每帧传解析好的参数"
+5. 固件侧是否接受这种用法还要验证（HFI 版本 6xx）
 
-猜测方向：`v4l2h264dec` 需要 `V4L2_FMT_FLAG_CONTINUOUS_BYTESTREAM`（flags 里只有 0x9），
-或者需要用 `video/x-raw(memory:DMABuf)` 的 CAPTURE 端。
+这是上游多年来没人做的工作量（数千行 + 固件不确定性），**而它换不来任何用户可见收益**——
+因为 stateful 这条路上，GStreamer 已经自动硬解（clapper/totem 直接受益）。
 
-## 5. 下一步（要真正在播放器里用上）
+如果目的是让 **mpv** 硬解，那也不是 stateless 的问题，而是 mpv 的构建里没有 v4l2m2m hwdec；
+可以走 AUR 重编 mpv，或者直接用 clapper。
 
-1. **GStreamer 修通**：修好后 `clapper`/`totem`/Phosh 里的视频播放器自动受益，
-   这是移动端最主要的路。
-2. 或者给 mpv 打 `v4l2m2m` hwdec 支持（mpv 有 `--hwdec=v4l2m2m`，但当前构建没编进去）。
-3. 编码也可以给 `umi-rec` 用上（现在录屏是 CPU x264）：
-   `wf-recorder -c h264_v4l2m2m`（需确认 wf-recorder 的 ffmpeg 编码器名字）。
+## 5. 下一步
+
+1. **播放器**：用 `clapper`（已装）——GStreamer 自动硬解，无需配置。
+2. **录屏编码**也可以上 Venus（现在 `umi-rec` 是 CPU x264）：
+   试 `wf-recorder -c h264_v4l2m2m`，如果 wf-recorder 的 ffmpeg 编码器名对得上。
+3. 真要 stateless：按 §4.1 的清单评估，属于"写驱动"级别的活，不是配置或补丁能解决的。
 
 ## 6. 快速自检
 
