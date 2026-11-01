@@ -1,0 +1,82 @@
+#!/bin/bash
+# umi-video-check —— Venus 硬件解码自检
+#
+# 判据只看 **venus 中断增量**（非 0 = 真硬解）。墙钟/CPU 时间会被机型和
+# 软解优化程度干扰，曾经因此误判过（详见 docs/VIDEO.md §3.0）。
+#
+# 用法： umi-video-check          # 解一段自造的 1080p H.264 并报结论
+#        umi-video-check file.mp4 # 检查指定文件能不能硬解
+set -u
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+irq() { grep -i venus /proc/interrupts 2>/dev/null | awk '{s=0; for(i=2;i<=9;i++) s+=$i; print s+0}'; }
+
+fail=0
+ok() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+bad() { printf '  \033[31m✗\033[0m %s\n' "$*"; fail=1; }
+info() { printf '  · %s\n' "$*"; }
+
+echo "== 1) 设备"
+if [ -c /dev/video0 ]; then
+	ok "$(v4l2-ctl -d /dev/video0 --info 2>/dev/null | awk -F': ' '/Card type/{print $2}')"
+else
+	bad "/dev/video0 不存在（venus 没起来？看 dmesg | grep venus）"
+fi
+fw=$(cat /sys/kernel/debug/venus/fw_level 2>/dev/null || echo 0)
+[ "$fw" != "0" ] && ok "固件等级 $fw" || bad "fw_level=0，固件没加载"
+
+echo "== 2) 支持的解码格式"
+v4l2-ctl -d /dev/video0 --list-formats-out 2>/dev/null |
+	awk '/\x27H264\x27|\x27HEVC\x27|\x27VP90\x27|\x27VP80\x27|\x27MPG2\x27/{gsub(/[\[\]]/,""); print "  ·", $2, $3}'
+
+echo "== 3) 实际解码（判据：venus 中断增量）"
+SRC=${1:-}
+if [ -z "$SRC" ]; then
+	SRC=$TMP/t.mp4
+	ffmpeg -hide_banner -loglevel error -y -f lavfi -i testsrc2=size=1920x1080:rate=30 \
+		-t 3 -c:v libx264 -preset ultrafast "$SRC" 2>/dev/null || bad "造样片失败"
+fi
+codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
+	-of csv=p=0 "$SRC" 2>/dev/null | head -1)
+case "$codec" in
+h264) dec=h264_v4l2m2m ;;
+hevc) dec=hevc_v4l2m2m ;;
+vp9) dec=vp9_v4l2m2m ;;
+mpeg2video) dec=mpeg2_v4l2m2m ;;
+*) dec="" ;;
+esac
+info "输入编码: ${codec:-未知}"
+
+if [ -n "$dec" ]; then
+	i0=$(irq)
+	ffmpeg -hide_banner -loglevel error -c:v "$dec" -i "$SRC" -f null - >/dev/null 2>&1
+	rc=$?
+	i1=$(irq)
+	d=$((i1 - i0))
+	if [ $rc -eq 0 ] && [ "$d" -gt 0 ]; then
+		ok "硬解 OK（$dec，venus 中断 +$d）"
+	else
+		bad "硬解失败（$dec rc=$rc 中断+$d）"
+	fi
+else
+	info "$codec 没有 v4l2m2m 解码器，会走软解"
+fi
+
+echo "== 4) 播放器路径"
+if command -v mpv >/dev/null; then
+	cfg=""
+	for f in "$HOME/.config/mpv/mpv.conf" /home/*/.config/mpv/mpv.conf; do
+		[ -f "$f" ] || continue
+		c=$(awk -F= '/^hwdec/{print $2}' "$f" 2>/dev/null)
+		[ -n "$c" ] && { cfg=$c; info "mpv 配置（$f）hwdec=$c"; break; }
+	done
+	[ -n "$cfg" ] && ok "mpv 会硬解" || info "mpv 未配置 hwdec"
+fi
+gst_rank=$(gst-inspect-1.0 v4l2h264dec 2>/dev/null | awk -F'[()]' '/Rank/{print $2; exit}')
+[ -n "$gst_rank" ] && ok "gst v4l2h264dec rank=$gst_rank（playbin 会自动选）" || info "没有 v4l2h264dec"
+
+echo
+[ $fail -eq 0 ] && echo "结论：硬件解码正常" || echo "结论：有问题，见上面 ✗"
+exit $fail

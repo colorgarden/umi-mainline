@@ -131,18 +131,64 @@ ffmpeg -i in.mp4 -c:v h264_v4l2m2m -b:v 8M out.mp4     # 走 /dev/video1
 如果目的是让 **mpv** 硬解，那也不是 stateless 的问题，而是 mpv 的构建里没有 v4l2m2m hwdec；
 可以走 AUR 重编 mpv，或者直接用 clapper。
 
-## 5. 下一步
+## 5. 能力矩阵（实测，2026-11-01 收尾）
 
-1. **播放器**：用 `clapper`（已装）——GStreamer 自动硬解，无需配置。
-2. **录屏编码**也可以上 Venus（现在 `umi-rec` 是 CPU x264）：
-   试 `wf-recorder -c h264_v4l2m2m`，如果 wf-recorder 的 ffmpeg 编码器名对得上。
-3. 真要 stateless：按 §4.1 的清单评估，属于"写驱动"级别的活，不是配置或补丁能解决的。
+判据统一是 **venus 中断增量 > 0**（软解永远是 0）。
+
+### 5.1 解码：编码 × 分辨率 × 位深
+
+| 样本 | ffmpeg `*_v4l2m2m` | mpv `v4l2m2m-copy` | gst playbin |
+|------|-------------------|--------------------|-------------|
+| H.264 1080p 8bit | ✅ +247 | ✅ +126 | ✅ `v4l2h264dec` +221 |
+| HEVC 1080p 8bit | ✅ +421 | ✅ +257 | ✅ `v4l2h265dec` +369 |
+| **HEVC 1080p 10bit** | ✅ +413 | ✅ +246 | ✅ `v4l2h265dec` +352 |
+| **HEVC 4K 8bit** | ✅ +268 | ✅ +208 | ✅ `v4l2h265dec` +215 |
+| **H.264 4K 8bit** | ✅ +117 | — | — |
+| VP9 1080p | ✅ +319 | ✅ +145 | ✅ `v4l2vp9dec` +228 |
+
+- 连续多轮解码后 `dmesg | grep -c 'venus.*error'` 仍为 **0**；
+- ffmpeg 每次会打一行 `VIDIOC_G_FMT ioctl`（它探测格式的噪声，无害）。
+
+### 5.2 编码（Venus `/dev/video1`）
+
+```sh
+ffmpeg -i in.mp4 -pix_fmt nv12 -c:v h264_v4l2m2m -b:v 8M out.mp4
+```
+
+- 必须显式 `-pix_fmt nv12`，否则报 `Encoder requires nv12 pixel format`；
+- 实测 1080p H.264 5 秒：硬编 845 ms / venus 中断 +313（软编 x264 ultrafast 1392 ms）；
+- **录屏仍用 CPU x264**：`wf-recorder` 只能给 RGB 帧，直接喂 `h264_v4l2m2m`
+  会报同样的 nv12 错误；而 `wf-recorder -c rawvideo -f -` 管道也不行
+  （`avio_open failed`）。要硬件编码只能在文件级 ffmpeg 工作流里做。
+
+### 5.3 已知无害噪声
+
+| 输出 | 说明 |
+|------|------|
+| `VIDIOC_G_FMT ioctl` | ffmpeg m2m 探测格式，每个进程一次 |
+| `Non-monotonic DTS` | 硬编时时间戳规整，输出可正常播放 |
+| `connector DSI-1: Atomic commit failed` | phoc 启动时的 1~2 次（与视频无关） |
 
 ## 6. 快速自检
+
+```sh
+umi-video-check                 # 一条命令跑完：设备/固件/解码/播放器路径
+umi-video-check my.mkv          # 检查指定文件能不能硬解
+```
+
+手工版：
 
 ```sh
 v4l2-ctl --list-devices                       # 期望 Qualcomm Venus video decoder/encoder
 v4l2-ctl -d /dev/video0 --list-formats-out    # 期望 H264/HEVC/VP9/VP8/MPG2
 cat /sys/kernel/debug/venus/fw_level          # 期望非 0
 ffmpeg -c:v h264_v4l2m2m -i test.mp4 -f null - && echo 硬解可用
+grep -i venus /proc/interrupts                # 跑解码时这个计数应该涨
 ```
+
+## 7. 会话/环境注意（踩过）
+
+- 播放器要跑在**用户会话**里（`XDG_RUNTIME_DIR=/run/user/1001`、`WAYLAND_DISPLAY`），
+  从 root 的 ssh 直接跑 `clapper` 会报 `Failed to open display`。
+- 桌面的自动启动放在 `~/.zprofile`（登录 shell 是 zsh），只写 `.bash_profile`
+  的话**桌面根本不会起来**（踩过：tty1 上只有 zsh）。见 `tools/fix-session-zsh.sh`。
