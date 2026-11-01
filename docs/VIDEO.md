@@ -60,10 +60,23 @@ venus 中断增量 +371
 | **clapper**（已装 `extra/clapper`） | ✅ 自动 | GStreamer 播放器，直接吃到 Venus |
 | totem / 其他 GStreamer 应用 | ✅ 自动 | 同上 |
 | ffplay | ⚠️ 需手动 | `umi-play in.mp4` 或 `ffplay -vcodec h264_v4l2m2m in.mp4` |
-| **mpv** | ❌ 不行 | 这个构建的 `--hwdec` 只有 vaapi/vulkan/vdpau，没有 v4l2m2m |
+| **mpv** | ✅ 自动（已配好） | `~/.config/mpv/mpv.conf` 里 `hwdec=v4l2m2m-copy`（`tools/install-mpv-hwdec.sh`） |
+
+★ mpv 必须用 **`v4l2m2m-copy`**，不是 `v4l2m2m`：这个构建的零拷贝路径报
+`Unsupported hwdec: v4l2m2m`，而 copy 变体可用（`Using hardware decoding (v4l2m2m-copy)`，venus 中断 +185）。
 
 > 曾经在 `/usr/local/bin` 上做过 ffmpeg/ffplay 的「默认插解码器」包装层，
-> 因为 mpv/GStreamer 才是主战场且 GStreamer 已自动硬解，**已回退**。
+> 用户不接受，**已回退**；现在靠 `mpv.conf`（一行配置）+ GStreamer 的自动选择解决。
+
+### 3.0.1 各编码实测（判据是 venus 中断增量，非 0 即真硬解）
+
+| 编码 | 解码器 | venus 中断 |
+|------|--------|-----------|
+| H.264 1080p | `h264_v4l2m2m` | +440 ✅ |
+| HEVC 720p | `hevc_v4l2m2m` | +452 ✅ |
+| VP9 720p | `vp9_v4l2m2m` | +313 ✅ |
+| H.264（mpv） | `v4l2m2m-copy` | +185 ✅ |
+| H.264（gst playbin） | `v4l2h264dec` | +371 ✅ |
 
 ### 3.1 手工指定解码器（ffmpeg）
 
