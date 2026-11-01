@@ -257,7 +257,28 @@
 	status = "disabled";
 };
 
-&venus {
-	firmware-name = "qcom/sm8250/umi/venus.mbn";
-	status = "disabled";
+/* ======================================================= 视频编解码（Venus）
+ * 硬件是独立的 Venus 核（SM8250 里叫 video-codec@aa00000），不是 GPU 里的单元：
+ *   - 解码：H.264 / HEVC / VP9 / (MPEG2 视固件而定)
+ *   - 编码：H.264 / HEVC
+ * 主线驱动是三块模块：venus-core / venus-dec / venus-enc，config 里已经有
+ * CONFIG_VIDEO_QCOM_VENUS=m。
+ *
+ * 固件从 modem 分区的 image/ 来（venus.mdt + venus.b00..b19），
+ * 装成 /lib/firmware/qcom/sm8250/umi/venus.mbn + venus.bNN
+ * （tools/install-venus-firmware.sh）。
+ *
+ * ★ 还要打开 &videocc：venus 的 core/vcodec0 时钟和 MVS0/MVS0C 两个 GDSC
+ *   都由它提供，videocc 关着时 venus probe 会一直 -EPROBE_DEFER。
+ * ★ 它的固件要映射到 reserved-memory 里的 video_mem（sm8250.dtsi 已给 5 MB），
+ *   我们不要动那块。
+ */
+&videocc {
+	status = "okay";
 };
+
+&venus {
+	status = "okay";
+	firmware-name = "qcom/sm8250/umi/venus.mbn";
+};
+
