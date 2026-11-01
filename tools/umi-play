@@ -1,0 +1,35 @@
+#!/bin/sh
+# umi-play —— 用 Venus 硬件解码播放视频（ffmpeg 的 *_v4l2m2m 解码器）
+#
+# 用法： umi-play <文件> [额外的 ffplay 参数...]
+#
+# 背景：6.12 主线的 venus 是 stateful V4L2 M2M，只有 ffmpeg 的
+# h264_v4l2m2m / hevc_v4l2m2m / vp9_v4l2m2m / mpeg2_v4l2m2m 能用
+# （mpv --hwdec=drm、gst v4l2slh264dec 走 stateless，主线没有）。
+# 实测 1080p H.264 300 帧：软解 CPU 6.19s -> 硬解 0.42s。
+set -eu
+
+if [ $# -lt 1 ]; then
+	echo "用法: umi-play <视频文件>" >&2
+	exit 2
+fi
+
+F=$1
+shift || true
+
+[ -f "$F" ] || { echo "umi-play: 找不到文件 $F" >&2; exit 1; }
+
+codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$F" 2>/dev/null | head -1)
+case "$codec" in
+h264)        dec=h264_v4l2m2m ;;
+hevc)        dec=hevc_v4l2m2m ;;
+vp9)         dec=vp9_v4l2m2m ;;
+mpeg2video)  dec=mpeg2_v4l2m2m ;;
+*)
+	echo "umi-play: $codec 没有硬件解码器，用软件解码播放" >&2
+	exec ffplay -autoexit "$@" "$F"
+	;;
+esac
+
+echo "umi-play: $codec -> $dec（Venus 硬解）" >&2
+exec ffplay -vcodec "$dec" -autoexit "$@" "$F"
