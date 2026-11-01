@@ -1,0 +1,87 @@
+#!/bin/bash
+# /usr/local/bin/ffmpeg —— 让 ffmpeg 默认走 Venus 硬件解码
+#
+# 原理：ffmpeg 没有"默认解码器"这种配置项，所以在它前面包一层：
+#   1. 找到第一个 -i 的输入文件，用 ffprobe 看视频编码
+#   2. 有对应的 *_v4l2m2m 解码器，就在 -i 之前插 -c:v <那个>
+#      （-c:v 在 -i 之前才作用于「输入解码」；输出编码的 -c:v 不受影响）
+#   3. 硬解失败（非 0 退出）自动用原始参数重跑软解 —— 硬件解码对异常
+#      profile / 超大分辨率偶尔会硬失败，不能让播放因此打不开
+#
+# 用法完全不变：  ffmpeg -i in.mp4 out.mp4
+# 临时关掉：      UMI_FFMPEG_SOFTWARE=1 ffmpeg ...
+# 自己指定解码器： ffmpeg -c:v libopenh264 -i ...（检测到就透传）
+#
+# 这是**解码**包装，不碰编码；要硬件编码请显式 -c:v h264_v4l2m2m。
+set -u
+
+REAL=/usr/bin/ffmpeg
+PROBE=/usr/bin/ffprobe
+
+# ---- 0) 强制软解 ----
+if [ "${UMI_FFMPEG_SOFTWARE:-0}" = "1" ]; then
+	exec "$REAL" "$@"
+fi
+
+# ---- 1) 无参数 / 信息类调用直接透传 ----
+if [ $# -eq 0 ]; then
+	exec "$REAL"
+fi
+case "$1" in
+-version | -h | -help | -longhelp | -formats | -codecs | -decoders | -encoders | \
+	-hwaccels | -buildconf | -filters | -protocols | -muxers | -demuxers | \
+	-devices | -pix_fmts | -layouts | -sample_fmts | -colors | -L | -hide_banner)
+	# -hide_banner 后面还可能跟真参数，只有单独一个时才透传
+	if [ $# -eq 1 ]; then
+		exec "$REAL" "$@"
+	fi
+	;;
+esac
+
+args=("$@")
+
+# ---- 2) 定位第一个 -i；并检查 -i 之前是否已显式指定解码器 ----
+pos=-1
+explicit=0
+for i in "${!args[@]}"; do
+	a=${args[i]}
+	if [ "$a" = "-i" ] && [ "$pos" -lt 0 ]; then
+		pos=$i
+		break
+	fi
+	case "$a" in
+	-c:v | -vcodec | -codec:v | -c) explicit=1 ;;
+	esac
+done
+
+[ "$pos" -lt 0 ] && exec "$REAL" "${args[@]}"        # 没有 -i（管道/lavfi 输入）
+[ "$explicit" = 1 ] && exec "$REAL" "${args[@]}"     # 用户自己选了
+
+input=${args[pos + 1]:-}
+[ -n "$input" ] || exec "$REAL" "${args[@]}"
+case "$input" in -*) exec "$REAL" "${args[@]}" ;; esac
+
+# ---- 3) 探编码，挑解码器 ----
+codec=$("$PROBE" -v error -select_streams v:0 -show_entries stream=codec_name \
+	-of csv=p=0 -- "$input" 2>/dev/null | head -1)
+case "$codec" in
+h264) dec=h264_v4l2m2m ;;
+hevc) dec=hevc_v4l2m2m ;;
+vp9) dec=vp9_v4l2m2m ;;
+mpeg2video) dec=mpeg2_v4l2m2m ;;
+*) exec "$REAL" "${args[@]}" ;;
+esac
+
+# 解码器真的存在才插
+"$REAL" -hide_banner -decoders 2>/dev/null | grep -q " $dec " || exec "$REAL" "${args[@]}"
+
+# ---- 4) 重组参数：-i 前插入 -c:v <dec> ----
+newargs=("${args[@]:0:pos}" -c:v "$dec" "${args[@]:pos}")
+
+if "$REAL" "${newargs[@]}"; then
+	exit 0
+fi
+
+status=$?
+echo "ffmpeg-wrapper: 硬解失败（$codec -> $dec，退出码 $status），回退软件解码重试" >&2
+exec "$REAL" "${args[@]}"

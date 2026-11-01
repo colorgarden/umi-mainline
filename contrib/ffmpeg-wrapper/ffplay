@@ -1,0 +1,60 @@
+#!/bin/bash
+# /usr/local/bin/ffplay —— 让 ffplay 默认走 Venus 硬件解码
+#
+# 和 ffmpeg 的包装同样的思路，只是 ffplay 用 -vcodec 指定解码器，
+# 且输入文件是位置参数（选项之后）。这里取「第一个真实存在的文件」当输入。
+#
+# 用法不变： ffplay video.mp4
+# 关掉硬解： UMI_FFMPEG_SOFTWARE=1 ffplay video.mp4
+# 看最终参数： UMI_FFMPEG_WRAPPER_DEBUG=1 ffplay video.mp4
+set -u
+
+REAL=/usr/bin/ffplay
+PROBE=/usr/bin/ffprobe
+
+if [ "${UMI_FFMPEG_SOFTWARE:-0}" = "1" ]; then
+	exec "$REAL" "$@"
+fi
+if [ $# -eq 0 ]; then
+	exec "$REAL"
+fi
+case "$1" in
+-version | -h | -help | -L | -formats | -codecs | -decoders | -encoders | -hwaccels | -buildconf | -filters)
+	exec "$REAL" "$@"
+	;;
+esac
+
+args=("$@")
+input=""
+for a in "${args[@]}"; do
+	case "$a" in -*) continue ;; esac
+	if [ -f "$a" ]; then
+		input=$a
+		break
+	fi
+done
+[ -n "$input" ] || exec "$REAL" "${args[@]}"
+
+codec=$("$PROBE" -v error -select_streams v:0 -show_entries stream=codec_name \
+	-of csv=p=0 -- "$input" 2>/dev/null | head -1)
+case "$codec" in
+h264) dec=h264_v4l2m2m ;;
+hevc) dec=hevc_v4l2m2m ;;
+vp9) dec=vp9_v4l2m2m ;;
+mpeg2video) dec=mpeg2_v4l2m2m ;;
+*) exec "$REAL" "${args[@]}" ;;
+esac
+"$REAL" -hide_banner -decoders 2>/dev/null | grep -q " $dec " || exec "$REAL" "${args[@]}"
+
+newargs=(-vcodec "$dec" "${args[@]}")
+
+if [ "${UMI_FFMPEG_WRAPPER_DEBUG:-0}" = "1" ]; then
+	echo "ffplay-wrapper: $codec -> $dec" >&2
+	echo "ffplay-wrapper argv: $REAL ${newargs[*]}" >&2
+fi
+
+if "$REAL" "${newargs[@]}"; then
+	exit 0
+fi
+echo "ffplay-wrapper: 硬解失败（$codec -> $dec），回退软件解码重试" >&2
+exec "$REAL" "${args[@]}"

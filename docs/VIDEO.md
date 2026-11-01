@@ -34,7 +34,36 @@
 （`grep media_device|MEDIA_IOC_REQUEST|SUPPORTS_REQUESTS drivers/media/platform/qcom/venus/` 为空），
 所以它是 **stateful V4L2 M2M**，必须两端成对用：OUTPUT 喂码流、CAPTURE 收 NV12。
 
-### 3.1 已验证可用：ffmpeg 的 `*_v4l2m2m`
+### 3.0 已经做成「默认硬解」（ffmpeg / ffplay 包装层）
+
+ffmpeg 没有「默认解码器」这种配置项，所以在 PATH 里（`/usr/bin` 之前）顶了一层包装：
+
+```
+contrib/ffmpeg-wrapper/ffmpeg   -> /usr/local/bin/ffmpeg
+contrib/ffmpeg-wrapper/ffplay   -> /usr/local/bin/ffplay
+```
+
+行为：
+
+1. 找第一个 `-i` 的输入（ffplay 取第一个真实存在的文件），用 `ffprobe` 看编码；
+2. 有对应的 `*_v4l2m2m`，就在 `-i` **之前**插 `-c:v <dec>`
+   （`-c:v` 只有放在 `-i` 前才作用于「输入解码」，输出的 `-c:v libx264` 不受影响）；
+3. **硬解失败自动回退软解**（非 0 退出就用原始参数重跑）——
+   硬解遇到异常 profile / 超大分辨率会硬失败，不能让视频因此打不开；
+4. 信息类调用（`-version` / `-decoders` / …）和用户已经显式写了 `-c:v` 的命令**原样透传**。
+
+```sh
+ffmpeg -i in.mp4 out.mp4                    # 自动硬解 + 软编
+ffplay in.mp4                               # 自动硬解播放
+umi-play in.mp4                             # 等价（自带 codec 探测）
+
+UMI_FFMPEG_SOFTWARE=1 ffplay in.mp4         # 临时强制软解
+UMI_FFMPEG_WRAPPER_DEBUG=1 ffplay in.mp4    # 打印最终 argv（排错）
+```
+
+实测（1080p H.264，2 秒）：默认路径 venus 中断 **+87**；`UMI_FFMPEG_SOFTWARE=1` 时 **+0**。
+
+### 3.1 手工指定解码器（不走包装时）
 
 ```sh
 ffmpeg -c:v h264_v4l2m2m -i in.mp4 -f null -        # 解码（H.264）
