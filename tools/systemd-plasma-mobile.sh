@@ -6,18 +6,18 @@ set -u
 
 cat > /etc/systemd/system/plasmamobile.service <<'EOF'
 [Unit]
-Description=Plasma Mobile (tty1)
+Description=Plasma Mobile (tty7)
 After=systemd-user-sessions.service
 Wants=user@1001.service
 After=user@1001.service
-Conflicts=getty@tty1.service phosh.service
+Conflicts=getty@tty7.service phosh.service
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 User=colorgarden
 PAMName=login
-TTYPath=/dev/tty1
+TTYPath=/dev/tty7
 StandardInput=tty
 StandardOutput=journal
 StandardError=journal
@@ -27,7 +27,7 @@ TTYVTDisallocate=yes
 Environment=XDG_SESSION_TYPE=wayland
 Environment=XDG_SESSION_DESKTOP=KDE
 Environment=XDG_CURRENT_DESKTOP=KDE
-ExecStart=/bin/sh -c 'mkdir -p /run/user/1001 && chown colorgarden:colorgarden /run/user/1001 && chmod 700 /run/user/1001; exec /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasmamobile'
+ExecStart=/bin/sh -c 'mkdir -p /run/user/1001 && chown colorgarden:colorgarden /run/user/1001 && chmod 700 /run/user/1001; export XDG_RUNTIME_DIR=/run/user/1001; for i in $(seq 1 120); do grep -lq connected /sys/class/drm/card*-DSI-*/status 2>/dev/null && break; sleep 0.5; done; exec /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasmamobile'
 # plasmashell 由 systemd --user 管（plasma-plasmashell.service）。它被重启时
 # 不会继承会话环境，缺 WAYLAND_DISPLAY 就会回退 xcb、abort、撞 start-limit，
 # 最终把整个会话带崩。这里在 kwin 起来后把 WAYLAND_DISPLAY 导入用户管理器。
@@ -45,6 +45,10 @@ ExecStopPost=-/bin/sh -c 'sleep 1; loginctl list-sessions --no-legend 2>/dev/nul
 WantedBy=graphical.target
 EOF
 
+cat > /etc/tmpfiles.d/umi-runtime.conf <<'EOF2'
+d /run/user/1001 0700 colorgarden colorgarden -
+EOF2
+systemd-tmpfiles --create /etc/tmpfiles.d/umi-runtime.conf 2>/dev/null || true
 systemctl daemon-reload
 systemd-analyze verify /etc/systemd/system/plasmamobile.service 2>&1 | head -3
 systemctl disable phosh.service >/dev/null 2>&1 || true

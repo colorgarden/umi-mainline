@@ -375,3 +375,26 @@ sleep 3; fuser /dev/tty1        # 必须为空
 systemctl reset-failed plasmamobile.service
 systemctl start plasmamobile.service
 ```
+
+### 2.8 开机黑屏/停在 tty 的最终修复（2026-11-14）
+
+根因有两层，缺一不可：
+
+1. **没有 `XDG_RUNTIME_DIR` 和 `/run/user/1001`**：pam_systemd 在 tty1 上建会话失败
+   （`VirtualTerminalAlreadyTaken`），于是没有运行时目录 → `systemd --user` 起不来 →
+   kwin 报 `Could not create wayland socket`。
+   修法：
+   - `/etc/tmpfiles.d/umi-runtime.conf`：`d /run/user/1001 0700 colorgarden colorgarden -`
+   - 单元 `ExecStart` 里 `mkdir/chown/chmod` 并在 exec 前 `export XDG_RUNTIME_DIR`
+   - `Wants=/After=user@1001.service`，让 user manager 持有该目录（tmpfiles 建的目录会被
+     `user-runtime-dir@1001` 在会话收尾时删掉）
+   - 改到专用 VT：`TTYPath=/dev/tty7`
+2. **kwin 启动早于 DRM card 注册**：本机显示设备是 `card1`（`card1-DSI-1`），
+   开机时 kwin 只拿到 `renderD128`，于是没有输出（画面停在 tty）。
+   修法：`ExecStart` 里先等 DSI 连接器变成 `connected`：
+   ```sh
+   for i in $(seq 1 120); do grep -lq connected /sys/class/drm/card*-DSI-*/status 2>/dev/null && break; sleep 0.5; done
+   ```
+
+验证：开机后 `kwin=2 plasmashell=1`、`/run/user/1001` 有 `bus/systemd/pipewire-0/wayland-1`、
+kwin 已打开 `/dev/dri/card1`、活动 VT 是 tty7。

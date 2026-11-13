@@ -46,3 +46,23 @@ waydroid status    -> Container: STOPPED / IP address: UNKNOWN
 
 `lxc.hook.post-stop = /dev/null` 会让 LXC 每次收尾报
 `Script exited with status 126`，这是 waydroid 的已知噪音，不代表容器启动失败。
+
+## 进展更新（2026-11-14 07:36）
+
+补充修复后，Android 已经能启动到：
+
+- `surfaceflinger`、`zygote64`、`netd` 的 BPF 程序都加载了
+- `waydroid status`：Session RUNNING / Container RUNNING
+- 宿主侧 `waydroid0` 起来（192.168.240.1/24），但 Android 侧 IP 还是 UNKNOWN
+
+**当前卡点**：`zygote` 被 init 反复 SIGKILL 重启（`onrestart` 序列在跑），
+`system_server` 始终没起来 → `waydroid app list` 返回 0 个包。
+下一步要看 zygote 的崩溃原因（`logcat -b crash -d`），以及补
+`/dev/stune`、`/dev/cpuset` 这类 cgroup v1 兼容挂载（Android 的 libprocessgroup 一直在报
+`Failed to open /dev/stune/foreground/tasks`）。
+
+已修的相关项：
+- `CONFIG_PSI=y`（之前缺 PSI，lmkd 连退 4 次把 init 拖进 `InitFatalReboot`）
+- 容器 cgroup 从只读改成可写：`lxc.mount.auto = cgroup:rw`（同时改了模板
+  `/usr/lib/waydroid/data/configs/config_base`，否则每次启动会被重新生成覆盖）
+- `dev-binderfs.mount` 单元（`tools/install-binderfs.sh`）保证 `/dev/binderfs` 开机挂好
