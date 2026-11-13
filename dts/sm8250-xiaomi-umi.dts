@@ -431,7 +431,7 @@
 	speaker-dai-link {
 		link-name = "Tertiary TDM Playback";
 		cpu {
-			sound-dai = <&q6afedai TERTIARY_TDM_RX_0>;
+			sound-dai = <&q6afedai TERTIARY_MI2S_RX>;
 		};
 
 		platform {
