@@ -270,3 +270,32 @@ q6asmdai 的 iommus/SID、MI2S 替代 TDM（声卡注册 -ENODEV，已回退）�
    拿不到版本信息）。
 3. 换另一条 BE（如 PRIMARY MI2S）验证 ASM 数据面是否与 TDM 无关；
    若 MI2S 也 EIO，则是 ASM/ADM 配置问题，不是 TDM。
+
+## 9. 已成功（2026-11-14）
+
+**扬声器已经出声，用户确认听到 1 kHz。**
+
+关键配置（三条都必需）：
+
+1. `dts/sm8250-xiaomi-umi.dts`：speaker dai-link 的 cpu dai 用
+   **`TERTIARY_MI2S_RX`**（port 20 / AFE 0x1004），不是 TDM_RX_0。
+2. `&q6asmdai { iommus = <&apps_smmu 0x1801 0x0>; }`：
+   缺了它 `q6asm_dai_probe` 得到 `sid = -1`，ADSP 拿裸物理地址访问共享内存。
+3. 机器驱动 MI2S 分支里给每颗 CS35L41 设 channel map（RX1/RX2 = {!j,j}）
+   + `set_sysclk(MI2S_BCLK_RATE)`，外加 cs35l41 的 PUP 轮询/SYSCLK 补丁。
+
+持久化：`tools/install-audio-route.sh` 装 `umi-audio-route.service`，
+开机后把 `TERT_MI2S_RX Audio Mixer MultiMedia1` 打开、功放音量设 12（60%）。
+重启后实测：服务 active、mixer on、`aplay` rc=0，只有关闭时一条无害的
+`status=0xa`（DSP 对关闭后到达的写响应）。
+
+对照实验（说明为什么之前一直失败）：
+| 后端 | aplay 结果 |
+|---|---|
+| DISPLAY_PORT_RX | 成功（无 EIO） |
+| TERTIARY TDM | ASM_DATA_CMD_WRITE_V2 → 0xa (ENOTREADY) |
+| **TERTIARY MI2S** | **成功出声** |
+
+待办：PipeWire/WirePlumber 还没有把这张卡做成可用的 sink（UCM 文件仍不完整，
+`spa.alsa: Path Speaker is not a volume or mute control`），普通应用要出声
+还需要修 UCM 或加 WirePlumber 规则。
