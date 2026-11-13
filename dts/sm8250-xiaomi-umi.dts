@@ -498,6 +498,11 @@
 };
 
 &q6asmdai {
+	/* ADSP 通过 apps_smmu 的音频 context bank 访问共享内存；
+	 * 不给 iommus 时 pdata->sid=-1，DSP 拿到裸物理地址会访问失败，
+	 * 写数据被拒（ASM_DATA_CMD_WRITE_V2 -> 0xa ENOTREADY）。 */
+	iommus = <&apps_smmu 0x1801 0x0>;
+
 	dai@0 {
 		reg = <0>;
 	};
