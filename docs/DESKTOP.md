@@ -211,3 +211,25 @@ wf-recorder -o DSI-1 -D -f out.mp4 -c libx264 \
 手机屏幕经常是静态的 → 录出来可能只有几百字节。
 ★ 没有硬件编码：Adreno 650 没有 VAAPI 编码器（v4l2 那条主线还没接），
 只能 CPU x264；ultrafast + crf28 + 30fps 在 SD865 上实测够用（约 33 KB/s 静态画面）。
+
+### 1.3.1 桌面外观（2026-11-14）
+
+| 项 | 值 |
+|---|---|
+| GTK 主题 | `adw-gtk3-dark`（`extra/adw-gtk-theme`，让 GTK3 应用也跟 libadwaita 一致） |
+| 图标 | `Papirus-Dark` |
+| 配色 | `prefer-dark` |
+| 壁纸 | `~/Pictures/amber-d.jpg`（从 `gnome-backgrounds` 的 JXL 转成 1080x2340 JPEG） |
+| 应用网格 | 关闭自适应过滤（`sm.puri.phosh app-filter-mode=[]`），改用手动隐藏开发工具：在 `~/.local/share/applications/` 里给 btop++/Htop/CMake/Qt V4L2 加 `NoDisplay=true` |
+| 字体 | `Noto Sans CJK SC 11`，等宽 `Noto Sans Mono CJK SC 10` |
+
+壁纸转换命令（JXL → 手机尺寸 JPEG）：
+
+```sh
+ffmpeg -i /usr/share/backgrounds/gnome/amber-d.jxl \
+  -vf "scale=1080:2340:force_original_aspect_ratio=increase,crop=1080:2340" \
+  -frames:v 1 -q:v 3 ~/Pictures/amber-d.jpg
+```
+
+想换别的：`gnome-backgrounds` 里还有 `adwaita-d`（深蓝）、`curvaturingster-d`（撞色）、
+`balls-d`、`blendpills-d` 等，同样转一下再 `gsettings set org.gnome.desktop.background picture-uri`。
