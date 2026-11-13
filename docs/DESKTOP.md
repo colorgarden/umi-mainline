@@ -233,3 +233,57 @@ ffmpeg -i /usr/share/backgrounds/gnome/amber-d.jxl \
 
 想换别的：`gnome-backgrounds` 里还有 `adwaita-d`（深蓝）、`curvaturingster-d`（撞色）、
 `balls-d`、`blendpills-d` 等，同样转一下再 `gsettings set org.gnome.desktop.background picture-uri`。
+
+## 2. Plasma Mobile（2026-11-14 起，替代 Phosh）
+
+桌面从 Phosh 换成了 **Plasma Mobile 6.8.2**，仍由 systemd 管理。
+
+### 2.1 systemd 单元
+
+`tools/systemd-plasma-mobile.sh` 安装 `/etc/systemd/system/plasmamobile.service`：
+
+```ini
+[Unit]
+After=systemd-user-sessions.service
+Conflicts=getty@tty1.service phosh.service
+[Service]
+User=colorgarden
+PAMName=login            # 没有它 pam_systemd 不建 session -> 无 DRM master / 无输入
+TTYPath=/dev/tty1
+StandardInput=tty
+ExecStart=/usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasmamobile
+ExecStartPost=-... systemctl --user import-environment WAYLAND_DISPLAY
+Restart=always
+```
+
+`startplasmamobile` 会 `export PLASMA_DEFAULT_SHELL=org.kde.plasma.mobileshell`，
+所以走的确实是移动 shell；`plasma-keyboard` 提供虚拟键盘。
+
+### 2.2 踩过的坑（都会表现为“掉回 tty”）
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `Could not create wayland socket` | 被杀掉的会话在 `/run/user/1001/` 留下 `wayland-1(.lock)` | `rm -f /run/user/1001/wayland-*` 后再启动 |
+| `pam_systemd: VirtualTerminalAlreadyTaken` | 旧会话进程还占着 tty1 | `pkill -9 -u colorgarden -f startplasma`、`dbus-run-session`，再 `systemctl stop/start plasmamobile` |
+| `plasmashell` 崩溃后整会话退出 | systemd --user 重启 plasmashell 时丢 `WAYLAND_DISPLAY` → 回退 xcb → abort → start-limit | 单元里 `ExecStartPost` 把 `WAYLAND_DISPLAY` 导入用户管理器 |
+| 套用 `org.kde.breezedark.desktop` 后崩溃 | 那是**桌面版** look-and-feel，移动 shell 组件不全 | 用 `org.kde.breeze.mobile` + `plasma-apply-colorscheme BreezeDark` |
+
+### 2.3 主题
+
+```sh
+plasma-apply-lookandfeel -a org.kde.breeze.mobile
+plasma-apply-colorscheme BreezeDark
+plasma-apply-wallpaperimage ~/Pictures/amber-d.jpg
+```
+
+截图（KWin 不支持 wlr-screencopy，grim 不可用）：
+
+```sh
+spectacle --fullscreen --background --nonotify --output /tmp/x.png
+# 需要会话活着；会话刚崩过时 KWin 的 ScreenShot2 会拒绝请求
+```
+
+### 2.4 旧图形栈
+
+Phosh/phoc/phosh-mobile-settings 已用 `pacman -Rs` 删除，旧 `phosh.service`、
+`umi-session` 包装脚本一并清理。要回退需重装 phosh/phoc 并恢复单元（见 git 历史）。
