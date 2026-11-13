@@ -287,3 +287,41 @@ spectacle --fullscreen --background --nonotify --output /tmp/x.png
 
 Phosh/phoc/phosh-mobile-settings 已用 `pacman -Rs` 删除，旧 `phosh.service`、
 `umi-session` 包装脚本一并清理。要回退需重装 phosh/phoc 并恢复单元（见 git 历史）。
+
+### 2.5 Layan 主题 + 中文界面
+
+**主题**（AUR 包 `plasma6-themes-layan-git`，提供 colors / desktoptheme / aurorae）：
+
+```sh
+# yay 在 ssh 里没法 sudo，先让 yay 只编译，再手动装包
+runuser -u colorgarden -- env HOME=/home/colorgarden yay -S --noconfirm plasma6-themes-layan-git
+pacman -U /home/colorgarden/.cache/yay/plasma6-themes-layan-git/*.pkg.tar.xz
+plasma-apply-colorscheme Layan
+plasma-apply-desktoptheme Layan
+kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key theme Layan
+kwriteconfig6 --file kdeglobals --group Icons --key Theme Papirus-Dark
+```
+
+look-and-feel 继续用 `org.kde.breeze.mobile`（换成 Layan 的 look-and-feel 有崩移动 shell 的风险，
+配色/桌面主题/窗口装饰可以单独套）。Layan 的配套图标 `tela-icon-theme` 未安装，
+设成 `tela-dark` 会回退默认图标，所以保持 Papirus-Dark。
+
+**中文**：
+
+- 系统层 `/etc/locale.conf` 已是 `LANG=zh_CN.UTF-8`，`locale -a` 里有 `zh_CN.utf8`
+- KDE 层要单独设 `~/.config/plasma-localerc`：
+
+```ini
+[Formats]
+LANG=zh_CN.UTF-8
+
+[Translations]
+LANGUAGE=zh_CN
+```
+
+- 校验：`tr '\0' '\n' < /proc/$(pgrep -x plasmashell)/environ | grep -E '^(LANG|LANGUAGE)='`
+  应为 `zh_CN`；`/usr/share/locale/zh_CN/LC_MESSAGES/` 里有 101 个 plasma 翻译和
+  `plasma_org.kde.plasma.private.mobileshell.mo`
+
+改完必须重启整个会话（`systemctl restart plasmamobile.service`），
+plasmashell 不会热加载语言。
