@@ -7,25 +7,48 @@
 
 ```
 systemd → getty@tty1（autologin colorgarden）
-        → login shell 读 ~/.bash_profile
-        → exec /usr/local/bin/umi-session      ← 会话入口（带兜底）
-        → exec /usr/bin/phosh-session
-        → phosh-session: dbus-run-session → phoc -v -S -C /usr/share/phosh/phoc.ini \
-                                              -E "gnome-session --session=phosh"
+        → zsh 读 ~/.zprofile
+        → systemctl --user start phosh.service   ← 桌面由 systemd --user 管
+        → exec sleep infinity                    ← 保住 logind session（seat/RUNTIME_DIR）
+
+phosh.service（user unit，/etc/systemd/user/）
+        → /usr/bin/phosh-session
+        → dbus-run-session → phoc -v -S -C /usr/share/phosh/phoc.ini \
+                             -E "gnome-session --session=phosh"
         → gnome-session 起 phosh（真二进制在 /usr/lib/phosh/phosh，不在 /usr/bin）
 ```
 
+- 会话本体在 systemd 里可见：`/user.slice/user-1001.slice/user@1001.service/app.slice/phosh.service`
+- `systemctl --user restart phosh`（以 colorgarden 身份）即可重启桌面
+- `phoc` 崩溃后 5 秒自动拉起（`Restart=always`、`RestartSec=5`、无启动次数上限）
+- 安装脚本：`tools/systemd-user-phosh.sh`（幂等）
+
+### 1.0 为什么用 systemd --user，而不是系统级 unit
+
+试过系统级 `phosh.service` + `PAMName=login`（pmOS 的做法），在这台机上**起不来**：
+单元 1 秒就 `Deactivated successfully` —— 旧会话和 seat 还挂在 tty1 上，systemd
+抢不到干净的会话。改成 user unit 后保留 getty（它才是正确创建 logind session /
+seat / `XDG_RUNTIME_DIR` 的那层），只把"谁来监督 phosh"交给 systemd。
+
+两个必须避开的坑（都实测踩过）：
+
+| 坑 | 现象 | 解法 |
+|---|---|---|
+| `PartOf=graphical-session.target` | 主进程一死，systemd 当成"被 stop"，`Restart` 永不触发（日志只有 `Stopped`，没有 `Scheduled restart`） | 去掉 `PartOf=` |
+| phoc 不响应 SIGTERM | 退出时做 DRM atomic commit 失败（`Atomic commit failed`）就卡住，默认 15 秒才被强杀 | `TimeoutStopSec=5` + `KillMode=control-group` |
+
 - `getty@tty1` 的自动登录在 `/etc/systemd/system/getty@tty1.service.d/autologin.conf`
 - **没有 sddm/lightdm**（`sddm` 是 disabled 状态，装 KDE 时留下的）
-- `.bash_profile` 里还留着 Plasma 的注释行，随时可以切回去
+- `.zprofile` 才是生效的那个（登录 shell 是 **zsh**；只写 `.bash_profile` 桌面不会起来）
 
-### 1.1 `umi-session` 兜底（很重要）
+### 1.1 `umi-session` 兜底（已不在启动路径上，保留作应急）
 
 ```
 /run/umi-session-fail 计数：Phosh 连崩 2 次 → 自动 exec Plasma Mobile
 ```
-没有这个兜底，Phosh 启动即崩时 getty 会把它当普通登录反复拉起，
-形成**无限重启**（踩过：屏幕每 3 秒闪一次，SSH 都难连）。
+这是 systemd 接管之前的兜底（当时 getty 会把崩溃的会话反复拉起，形成
+无限重启）。现在由 `Restart=always` 负责重启，`umi-session` 仅作为手动
+应急入口保留：`/usr/local/bin/umi-session`。
 
 排查完想回 Phosh：`rm -f /run/umi-session-fail` 再重启。
 
