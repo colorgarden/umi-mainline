@@ -34,6 +34,10 @@ Restart=always
 RestartSec=3
 TimeoutStopSec=10
 KillMode=control-group
+# 重启时最恶心的问题：旧 logind 会话还占着 tty1，新会话在 pam_systemd 里
+# 直接报 VirtualTerminalAlreadyTaken -> 没有 seat/DRM -> kwin "Could not create
+# wayland socket" 并 abort。停止后把该用户残留的会话全部终止，保证下一次能起。
+ExecStopPost=-/bin/sh -c 'sleep 1; loginctl list-sessions --no-legend 2>/dev/null | awk "/colorgarden/{print \$1}" | xargs -r -n1 loginctl terminate-session >/dev/null 2>&1; true'
 
 [Install]
 WantedBy=graphical.target

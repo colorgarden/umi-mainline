@@ -325,3 +325,53 @@ LANGUAGE=zh_CN
 
 改完必须重启整个会话（`systemctl restart plasmamobile.service`），
 plasmashell 不会热加载语言。
+
+### 2.6 “黑屏”其实是锁屏（2026-11-14）
+
+现象：一段时间不用后屏幕全黑，SSH 进来看到 `kscreenlocker_greet` 在跑，
+`brightness` 仍非 0（面板是亮的），kwin/plasmashell 都正常。
+
+Plasma Mobile 默认会锁屏，而且它的锁屏在 Layan/Breeze 混搭下渲染成纯黑，
+看起来就像挂了。关掉自动锁屏与空闲熄屏：
+
+```sh
+kwriteconfig6 --file kscreenlockerrc --group Daemon --key Autolock false
+kwriteconfig6 --file kscreenlockerrc --group Daemon --key Timeout 0
+kwriteconfig6 --file kscreenlockerrc --group Daemon --key LockGrace 0
+kwriteconfig6 --file powermanagementprofilesrc --group AC     --group Display --key DimDisplayIdleTimeoutSec 0
+kwriteconfig6 --file powermanagementprofilesrc --group AC     --group Display --key TurnOffDisplayIdleTimeoutSec 0
+kwriteconfig6 --file powermanagementprofilesrc --group Battery --group Display --key DimDisplayIdleTimeoutSec 0
+kwriteconfig6 --file powermanagementprofilesrc --group Battery --group Display --key TurnOffDisplayIdleTimeoutSec 0
+```
+
+排查判据：`pgrep -a -x kscreenlocker_greet` 有输出 = 只是锁屏，不是会话挂了；
+`cat /sys/class/backlight/*/brightness` 非 0 也说明面板有电。
+
+### 2.7 重启会话必须清掉旧 logind 会话
+
+`systemctl restart plasmamobile` 如果旧会话还占着 tty1，新会话会：
+
+```
+pam_systemd(login:session): Varlink call io.systemd.Login.CreateSession failed:
+  io.systemd.Login.VirtualTerminalAlreadyTaken
+kwin_wayland_wrapper: Could not create wayland socket
+→ kwin abort，整个会话起不来（表现为停在 tty 或黑屏）
+```
+
+单元里已经加了收尾钩子：
+
+```ini
+ExecStopPost=-/bin/sh -c 'sleep 1; loginctl list-sessions --no-legend |
+  awk "/colorgarden/{print \$1}" | xargs -r -n1 loginctl terminate-session'
+```
+
+手动恢复顺序（按此顺序不会踩坑）：
+
+```sh
+systemctl stop plasmamobile.service
+loginctl list-sessions --no-legend | awk '/colorgarden/{print $1}' | xargs -r -n1 loginctl terminate-session
+pkill -9 -u colorgarden
+sleep 3; fuser /dev/tty1        # 必须为空
+systemctl reset-failed plasmamobile.service
+systemctl start plasmamobile.service
+```
