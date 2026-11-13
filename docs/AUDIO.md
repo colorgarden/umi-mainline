@@ -313,3 +313,17 @@ q6asmdai 的 iommus/SID、MI2S 替代 TDM（声卡注册 -ENODEV，已回退）�
    48k/2ch/S16（`sm8250_be_hw_params_fixup` 的 TERTIARY_MI2S_RX 分支）。
 4. `boost-type` 必须是 **0（内部 boost）**：改成 2（shared boost）会明显更小声。
    厂商 DT（`umi-sm8250.dtsi`）里两颗 CS35L41 就没有这个属性，`asp-sdout-hiz` 是 1。
+
+### 9.2 开机无声：q6 模块没自动加载（2026-11-14）
+
+症状：`/proc/asound/cards` 显示 `--- no soundcards ---`，`dmesg` 里只有
+`umi-trace probe parse_of ret=-517`（EPROBE_DEFER）之后没有下文；
+手动 `modprobe q6asm q6afe q6adm q6routing` 后声卡立刻出现。
+
+原因：q6* 模块依赖 udev 的 modalias 自动加载，时序不稳；声卡 probe 先跑，
+组件还没注册就 defer，之后没有新的触发点。
+
+修复：`tools/audio-modules-load.sh` 写 `/etc/modules-load.d/umi-audio.conf`，
+开机显式加载 q6core / q6afe(-dai) / q6asm(-dai) / q6adm / q6routing /
+cs35l41 / snd-soc-sm8250。重启后验证：声卡 `X10` 出现且
+`umi-audio-route.service` active。
