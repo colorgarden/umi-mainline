@@ -6,49 +6,61 @@
 ## 1. 开机是怎么进桌面的
 
 ```
-systemd → getty@tty1（autologin colorgarden）
-        → zsh 读 ~/.zprofile
-        → systemctl --user start phosh.service   ← 桌面由 systemd --user 管
-        → exec sleep infinity                    ← 保住 logind session（seat/RUNTIME_DIR）
-
-phosh.service（user unit，/etc/systemd/user/）
-        → /usr/bin/phosh-session
+systemd → phosh.service（系统单元 /etc/systemd/system/phosh.service）
+        → pam_systemd 开 session（session-1.scope，seat0，Type=wayland）
+        → ExecStart=/usr/local/bin/umi-session → exec /usr/bin/phosh-session
         → dbus-run-session → phoc -v -S -C /usr/share/phosh/phoc.ini \
                              -E "gnome-session --session=phosh"
         → gnome-session 起 phosh（真二进制在 /usr/lib/phosh/phosh，不在 /usr/bin）
 ```
 
-- 会话本体在 systemd 里可见：`/user.slice/user-1001.slice/user@1001.service/app.slice/phosh.service`
-- `systemctl --user restart phosh`（以 colorgarden 身份）即可重启桌面
-- `phoc` 崩溃后 5 秒自动拉起（`Restart=always`、`RestartSec=5`、无启动次数上限）
-- 安装脚本：`tools/systemd-user-phosh.sh`（幂等）
+- 单元：`Type=simple`、`User=colorgarden`、**`PAMName=login`**、`TTYPath=/dev/tty1`、
+  `StandardInput=tty`、`Restart=always`、`RestartSec=3`、`TimeoutStopSec=5`、
+  `KillMode=control-group`、`Conflicts=getty@tty1.service`
+- tty1 上的 getty **必须 mask**（`systemctl mask getty@tty1`），否则它抢 TTY，单元起来即退
+- 应急控制台在 **tty2**（`getty@tty2` 已启用）
+- `systemctl restart phosh` 直接重启桌面；`phoc` 崩溃后 3 秒自动拉起（实测日志
+  `Scheduled restart job, restart counter is at 1`）
+- 安装脚本：`tools/systemd-phosh-session.sh`（幂等）
 
-### 1.0 为什么用 systemd --user，而不是系统级 unit
+### 1.0 为什么必须是「系统单元 + PAMName=login」
 
-试过系统级 `phosh.service` + `PAMName=login`（pmOS 的做法），在这台机上**起不来**：
-单元 1 秒就 `Deactivated successfully` —— 旧会话和 seat 还挂在 tty1 上，systemd
-抢不到干净的会话。改成 user unit 后保留 getty（它才是正确创建 logind session /
-seat / `XDG_RUNTIME_DIR` 的那层），只把"谁来监督 phosh"交给 systemd。
+两次踩坑之后的结论：
 
-两个必须避开的坑（都实测踩过）：
-
-| 坑 | 现象 | 解法 |
+| 方案 | 结果 | 原因 |
 |---|---|---|
-| `PartOf=graphical-session.target` | 主进程一死，systemd 当成"被 stop"，`Restart` 永不触发（日志只有 `Stopped`，没有 `Scheduled restart`） | 去掉 `PartOf=` |
-| phoc 不响应 SIGTERM | 退出时做 DRM atomic commit 失败（`Atomic commit failed`）就卡住，默认 15 秒才被强杀 | `TimeoutStopSec=5` + `KillMode=control-group` |
+| **systemd --user 单元** | 黑屏 + `Atomic commit failed` + 背光被关 + 电源键直接关机 | phoc 跑在 `user@1001.service/app.slice`，**不在任何 logind session 里**；libseat 的 logind 后端因此不给 DRM master，也没人 inhibit 电源键 → logind 按 `HandlePowerKey=poweroff` 关机 |
+| **系统单元 + PAMName=login**（当前） | 正常 | `pam_systemd` 新建 session，phoc 落在 `session-1.scope`（seat0 / Type=wayland），seat ACL、DRM master、输入、电源键 inhibit 全正常 |
 
-- `getty@tty1` 的自动登录在 `/etc/systemd/system/getty@tty1.service.d/autologin.conf`
-- **没有 sddm/lightdm**（`sddm` 是 disabled 状态，装 KDE 时留下的）
-- `.zprofile` 才是生效的那个（登录 shell 是 **zsh**；只写 `.bash_profile` 桌面不会起来）
+另外两点：
 
-### 1.1 `umi-session` 兜底（已不在启动路径上，保留作应急）
+- **不能在旧会话还占着 tty1 时热启动**这个单元（会 1 秒 `Deactivated successfully`）：
+  先 mask getty，再重启
+- `/etc/systemd/logind.conf.d/umi.conf` 设了 `HandlePowerKey=ignore`，
+  桌面没起来时按电源键不会变成直接关机（正常时由 phosh 自己处理）
+
+### 1.1 背光陷阱（黑屏但系统其实正常）
+
+`systemd-backlight` 会保存/恢复亮度，文件是
+`/var/lib/systemd/backlight/platform-ae94000.dsi:backlight:umi-panel`，
+它曾被保存成 `80/2047`（≈4%）——开机后**看着是黑屏，实际在正常渲染**：
+
+```sh
+cat /sys/class/backlight/umi-panel/brightness      # 80  <- 元凶
+cat /sys/class/drm/card1/card1-DSI-1/dpms          # On
+grim /tmp/s.png                                     # 能截到锁屏 -> 渲染没问题
+```
+
+判据顺序：**先看 `dpms` 和 `grim` 能否截图**，再怀疑背光。
+修法：`tools/fix-backlight.sh`（写 60% 并修正保存值）。
+
+### 1.2 `umi-session` 兜底（保留作应急）
 
 ```
 /run/umi-session-fail 计数：Phosh 连崩 2 次 → 自动 exec Plasma Mobile
 ```
-这是 systemd 接管之前的兜底（当时 getty 会把崩溃的会话反复拉起，形成
-无限重启）。现在由 `Restart=always` 负责重启，`umi-session` 仅作为手动
-应急入口保留：`/usr/local/bin/umi-session`。
+现在由 `Restart=always` 负责重启，`umi-session` 只作手动应急入口：
+`/usr/local/bin/umi-session`。
 
 排查完想回 Phosh：`rm -f /run/umi-session-fail` 再重启。
 
