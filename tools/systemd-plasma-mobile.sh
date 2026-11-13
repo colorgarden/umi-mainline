@@ -8,6 +8,8 @@ cat > /etc/systemd/system/plasmamobile.service <<'EOF'
 [Unit]
 Description=Plasma Mobile (tty1)
 After=systemd-user-sessions.service
+Wants=user@1001.service
+After=user@1001.service
 Conflicts=getty@tty1.service phosh.service
 StartLimitIntervalSec=0
 
@@ -25,7 +27,7 @@ TTYVTDisallocate=yes
 Environment=XDG_SESSION_TYPE=wayland
 Environment=XDG_SESSION_DESKTOP=KDE
 Environment=XDG_CURRENT_DESKTOP=KDE
-ExecStart=/usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasmamobile
+ExecStart=/bin/sh -c 'mkdir -p /run/user/1001 && chown colorgarden:colorgarden /run/user/1001 && chmod 700 /run/user/1001; exec /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasmamobile'
 # plasmashell 由 systemd --user 管（plasma-plasmashell.service）。它被重启时
 # 不会继承会话环境，缺 WAYLAND_DISPLAY 就会回退 xcb、abort、撞 start-limit，
 # 最终把整个会话带崩。这里在 kwin 起来后把 WAYLAND_DISPLAY 导入用户管理器。
