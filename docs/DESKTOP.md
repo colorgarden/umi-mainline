@@ -64,7 +64,49 @@ grim /tmp/s.png                                     # 能截到锁屏 -> 渲染�
 
 排查完想回 Phosh：`rm -f /run/umi-session-fail` 再重启。
 
-## 2. ★ Phosh 起不来的真正原因：wlroots 的 layer-shell 检查
+## 1.3 外观 / 体感调优（Android 向）
+
+一键脚本：`tools/umi-ui-tweaks.sh`（幂等）。
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| 界面字体 | `Noto Sans CJK SC 11` | 之前 UI 用的是**等宽**字体（像终端），现在是正常无衬线；等宽单独保留给终端 |
+| 等宽字体 | `Noto Sans Mono CJK SC 10` | Alacritty 等 |
+| 配色 | `prefer-dark` + `accent-color=blue` | Android 深色风格 |
+| 图标 | `Papirus`（已装） | |
+| 壁纸 | `/home/colorgarden/Pictures/wallpaper.png` | 现生成的径向渐变（深蓝→紫），不依赖网络 |
+| 收藏夹 | 文件 / Clapper / Alacritty / 手机设置 | `sm.puri.phosh favorites` |
+| 状态栏 | 显示电量百分比 | `show-battery-percentage true` |
+| GPU | **min_freq = max_freq（587 MHz 锁定）** | `umi-gpu-perf.service`；见下 |
+
+### 为什么锁 GPU 高频
+
+本机**没有 cpufreq**，而且是刻意关的：`CONFIG_ARM_QCOM_CPUFREQ_HW` /
+`_NVMEM` 都 `# not set`——它们会改写 CPU 电压/频率表，写错就是随机死机
+（当年为稳定性的取舍）。所以 CPU 频率不可调，唯一能提升"跟手"的是 GPU：
+`simple_ondemand` 在 UI 交互时会来不及升频，表现为掉帧；把 `min_freq`
+提到 `max_freq` 后 GPU 常驻 587 MHz。
+
+代价是功耗，回退：
+
+```sh
+systemctl stop umi-gpu-perf.service     # ExecStop 会把 min_freq 降回 305 MHz
+systemctl disable umi-gpu-perf.service
+```
+
+### 还没做到"跟 Android 一样"的部分
+
+| Android 行为 | Phosh 现状 |
+|---|---|
+| 底部上滑 = 回桌面 / 上滑停住 = 多任务 | Phosh 上滑进 overview（有，但不完全一样） |
+| 左/右边缘内滑 = 返回 | **没有**。Wayland 下全局手势只能由合成器实现，Phosh/phoc 没提供 |
+| 动画时长/曲线可调 | 没有开关，只有 `enable-animations` 全局开关 |
+| 应用启动动效 | GNOME 应用自己的，跟 compositor 无关 |
+
+要真正做到返回手势，需要在 `phoc` 里加边缘滑动 → 给焦点窗口发 Escape/Back，
+属于改合成器（wlroots）的活，工作量中等，不影响其它功能。备选是换 Plasma
+Mobile（KWin 有更完整的动画/手势框架，但历史上在这台机上更卡）。
+
 
 现象（`journalctl -b _COMM=phosh`）：
 
