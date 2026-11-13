@@ -244,3 +244,29 @@ printf 1        > /sys/module/q6cvp/parameters/rx_channels
 - [ ] WCD938x 到底是 9380 还是 9385（影响 `compatible` 和固件名）
 - [ ] `tert_tdm_active` 的 pinmux 是否已在 `sm8250.dtsi` 里（主线有 `tert_mi2s_active`，要 `/delete-node/ data0-pins` 后加 data1-pins）
 - [ ] 我们 `&i2c3` 上有没有别的从设备（bq25970 在 i2c15，触摸在 i2c13，应该空着）
+
+## 8. 当前卡点（2026-11-14 实测）
+
+链路全部打通到 DSP，只剩最后一步：
+
+```
+声卡 X10 注册 ret=0
+cs35l41 3-0040/3-0042 probe OK，PRE_PMU 无错（忽略 PUP 轮询超时）
+cs35l41 set_sysclk 24.576MHz OK
+AFE port 0x9020 start ret=0，set_param ret=0，scfg=yes
+ADM device open（apr_send 48B）OK，matrix_map path=1 port=56 session=1 copp=0
+ASM open / hw_params(48k,2ch,S16) / prepare / RUN 全部 ret=0
+ASM_DATA_CMD_WRITE_V2 → status=0xa（ADSP_ENOTREADY）→ aplay EIO
+```
+
+已排除：TDM 槽位（含 8x32/96k 与 48k 两种）、TDM 位时钟、功放 PUP、
+cs35l41 sysclk、ADM 端口/会话号、RUN 异步完成延迟（+50ms）、
+q6asmdai 的 iommus/SID、MI2S 替代 TDM（声卡注册 -ENODEV，已回退）。
+
+下一步候选：
+1. ADM COPP topology：`q6routing_stream_open` 用 `NULL_COPP_TOPOLOGY`，
+   TDM 端口可能需要专用 topology id；可打印/替换试。
+2. 用 ADSP 侧命令抓包对比（设备上没有 AR/ASM 字符串，固件被压缩，
+   拿不到版本信息）。
+3. 换另一条 BE（如 PRIMARY MI2S）验证 ASM 数据面是否与 TDM 无关；
+   若 MI2S 也 EIO，则是 ASM/ADM 配置问题，不是 TDM。
