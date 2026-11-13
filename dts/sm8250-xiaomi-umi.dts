@@ -559,7 +559,7 @@
 		cirrus,boost-peak-milliamp = <4000>;
 		cirrus,boost-ind-nanohenry = <1000>;
 		cirrus,boost-cap-microfarad = <15>;
-		cirrus,asp-sdout-hiz = <3>;
+		cirrus,asp-sdout-hiz = <1>;
 		cirrus,gpio2-src-select = <4>;
 		cirrus,gpio2-output-enable;
 		sound-name-prefix = "RCV";
@@ -581,7 +581,7 @@
 		cirrus,boost-peak-milliamp = <4000>;
 		cirrus,boost-ind-nanohenry = <1000>;
 		cirrus,boost-cap-microfarad = <15>;
-		cirrus,asp-sdout-hiz = <3>;
+		cirrus,asp-sdout-hiz = <1>;
 		cirrus,gpio2-src-select = <4>;
 		cirrus,gpio2-output-enable;
 		sound-name-prefix = "LCV";

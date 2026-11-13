@@ -299,3 +299,17 @@ q6asmdai 的 iommus/SID、MI2S 替代 TDM（声卡注册 -ENODEV，已回退）�
 待办：PipeWire/WirePlumber 还没有把这张卡做成可用的 sink（UCM 文件仍不完整，
 `spa.alsa: Path Speaker is not a volume or mute control`），普通应用要出声
 还需要修 UCM 或加 WirePlumber 规则。
+
+### 9.1 后续修正（两颗功放都要出声 / 破音）
+
+1. **只有一颗功放在响**：两颗 CS35L41 的 DAC 都从 **RX2** 取数，而 DSP 仅在
+   slot0 有信号。原来的 channel map 是 `{!j,j}`，导致第二颗读到空槽。
+   机器驱动里改成 **两颗都指向 slot0**（`{0,0}`）后，上下喇叭都出声、音量明显变大。
+2. **破音**：两颗功放模拟 +20.5 dB / 数字 +12 dB 全开再叠加 100% 音量，
+   小喇叭低音直接过载。实测可接受参数：
+   `Analog PCM = 4`（+4.5 dB）、`Digital PCM = 913`（0 dB）、`DRE = off`，
+   PipeWire 默认音量 ~35%。已写进 `umi-audio-route.service`。
+3. **FE 位深**：PipeWire 默认用 S24_LE 打开前端，机器驱动里已把 BE 强制为
+   48k/2ch/S16（`sm8250_be_hw_params_fixup` 的 TERTIARY_MI2S_RX 分支）。
+4. `boost-type` 必须是 **0（内部 boost）**：改成 2（shared boost）会明显更小声。
+   厂商 DT（`umi-sm8250.dtsi`）里两颗 CS35L41 就没有这个属性，`asp-sdout-hiz` 是 1。
