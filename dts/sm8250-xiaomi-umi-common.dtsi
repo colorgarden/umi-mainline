@@ -744,6 +744,16 @@
 		 * usb_1_qmpphy 和 fsa4480，等那条线做完再打开。
 		 */
 		power-role = "sink";
+		/*
+		 * 必须显式写 data-role = "device"。
+		 * TCPM 在 sink attach 时用 tcpm_data_role_for_sink()：
+		 *   typec_caps.data == TYPEC_PORT_DFP ? TYPEC_HOST : TYPEC_DEVICE
+		 * connector 没声明 data-role 时 caps.data 退化成 DFP，
+		 * data_role 就被报成 host —— 于是 PD 一直不协商、只能拿到 SDP 5V/500mA，
+		 * 插 PD 充电器还会 cc/vbus 反复 attach-detach（表现为充电断连循环）。
+		 * 我们的 dwc3 是 peripheral-only（dr_mode = "peripheral"），本来就该是 device。
+		 */
+		data-role = "device";
 		self-powered;
 		vbus-supply = <&pm8150b_vbus>;
 
