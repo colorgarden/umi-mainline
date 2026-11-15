@@ -398,3 +398,34 @@ systemctl start plasmamobile.service
 
 验证：开机后 `kwin=2 plasmashell=1`、`/run/user/1001` 有 `bus/systemd/pipewire-0/wayland-1`、
 kwin 已打开 `/dev/dri/card1`、活动 VT 是 tty7。
+
+### 2.9 folio 桌面空白（只剩状态栏）+ 声音消失（2026-11-15）
+
+两个症状同源，都是 **`/run/user/1001` 被删掉**：
+
+| 症状 | 机制 |
+|---|---|
+| 桌面只剩状态栏 | `user@1001` 停止后 `user-runtime-dir@1001` 把 `/run/user/1001` 删掉；plasmashell 还活着但运行时目录没了，folio 的 `HomeScreen` 单例注册失败 |
+| 声音消失 | 同一原因：PipeWire 的用户服务与 socket 都依赖该目录；另外 `LCV Analog PCM` 被之前的调音实验留在 0 |
+
+处理：
+
+```sh
+systemctl stop plasmamobile; pkill -9 -u colorgarden
+mkdir -p /run/user/1001 && chown colorgarden:colorgarden /run/user/1001 && chmod 700 /run/user/1001
+systemctl reset-failed user@1001 plasmamobile
+systemctl start user@1001; systemctl start plasmamobile
+systemctl restart umi-audio-route     # 把 LCV/RCV 增益恢复到 4（+4.5dB）
+```
+
+**folio 本身是坏的**（Arch 的 `plasma-mobile` 6.8.2 包缺 folio 的 `contents/ui`，
+`HomeScreen is neither a default constructible QObject...`、
+`ExpandedCategoryAppGrid.qml:355: Unable to assign [undefined] to QObject*`）。
+换用包里同样提供的 **halcyon** 桌面即可，容器配置里改：
+
+```ini
+plugin=org.kde.plasma.mobile.homescreen.halcyon
+```
+
+另外删掉 Phosh 时代遗留的 `~/.config/systemd/user/wayvnc.service`
+（它会不停重启并刷 `Failed to connect to WAYLAND_DISPLAY="wayland-0"`）。
