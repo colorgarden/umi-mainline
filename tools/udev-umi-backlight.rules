@@ -1,0 +1,10 @@
+# 让 video 组可以直接写背光亮度。
+#
+# 为什么需要：Plasma Mobile 的亮度滑块走 PowerDevil -> backlighthelper(kauth/polkit)。
+# 这台机器的会话是我们自己用 systemd 单元建的，polkit 有时判定它不是 active 会话，
+# backlighthelper 就被拒（org_kde_powerdevil: Failed to set screen brightness），
+# 于是 PowerDevil 连 BrightnessControl 对象都不注册，UI 里就没有亮度条。
+#
+# 直接从设备权限入手更稳：umi-panel 是普通 sysfs 背光节点，给 video 组写权限即可，
+# colorgarden 本来就在 video 组里。
+ACTION=="add", SUBSYSTEM=="backlight", RUN+="/bin/chgrp video /sys/class/backlight/%k/brightness", RUN+="/bin/chmod g+w /sys/class/backlight/%k/brightness"

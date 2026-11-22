@@ -1,0 +1,11 @@
+// 允许 wheel 组调节背光。
+// 这台机器的 Plasma Mobile 会话由自定义 systemd 单元启动，
+// polkit 侧判定它不是 "active" 会话，导致 backlighthelper 被拒
+// （org_kde_powerdevil: Failed to set screen brightness 4 ""）。
+// 底层 sysfs 写入是好的，纯粹是授权问题，这里按组放行。
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.kde.powerdevil.backlighthelper.") === 0 &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});

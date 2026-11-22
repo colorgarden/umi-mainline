@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""在 Denial 运行时切换输出方向（利用未封装进 denialctl 的 outputs.apply）。
+
+denialctl 只暴露 outputs / outputs.get，但 deniald 的控制 socket 还实现了
+outputs.apply + outputs.confirm。这里直接说那套 JSON 行协议。
+
+用法:
+  denial-rotate [--flipped] [--persistent] normal|90|180|270
+  denial-rotate status
+"""
+
+import argparse
+import json
+import os
+import socket
+import sys
+
+PROTOCOL_VERSION = 1
+IO_TIMEOUT = 30.0
+
+
+def socket_path() -> str:
+    override = os.environ.get("DENIAL_SOCKET")
+    if override:
+        return override
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        sys.exit("DENIAL_SOCKET 与 XDG_RUNTIME_DIR 都未设置")
+    return os.path.join(runtime, "denial", "control.sock")
+
+
+def call(method: str, params, request_id: int = 1):
+    path = socket_path()
+    payload = json.dumps(
+        {"version": PROTOCOL_VERSION, "id": request_id, "method": method, "params": params},
+        separators=(",", ":"),
+    ).encode() + b"\n"
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(IO_TIMEOUT)
+        sock.connect(path)
+        sock.sendall(payload)
+        chunks = []
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if b"\n" in chunk:
+                break
+
+    raw = b"".join(chunks).strip()
+    if not raw:
+        sys.exit("compositor 没有返回内容")
+    response = json.loads(raw)
+    if response.get("version") != PROTOCOL_VERSION:
+        sys.exit(f"协议版本不匹配: {response.get('version')}")
+    if not response.get("ok", False):
+        error = response.get("error") or {}
+        sys.exit(f"拒绝: {error.get('code')}: {error.get('message')}")
+    return response.get("result")
+
+
+def snapshot(request_id: int):
+    return call("outputs.get", None, request_id)
+
+
+def main():
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("target", help="normal|90|180|270|status")
+    parser.add_argument("--flipped", action="store_true", help="使用 flipped-* 而不是 rotate")
+    parser.add_argument("--persistent", action="store_true", help="同时写回 outputs.conf")
+    parser.add_argument("--confirm-timeout", type=int, default=0,
+                        help="确认超时毫秒；0 表示不进入回滚确认流程")
+    args = parser.parse_args()
+
+    if args.target == "status":
+        state = snapshot(1)
+        for output in state["outputs"]:
+            mode = output["current_mode"]
+            print(
+                f"{output['name']}: {output['transform']} "
+                f"{mode['width']}x{mode['height']} scale {output['scale']} "
+                f"logical {output['logical_width']}x{output['logical_height']}"
+            )
+        return
+
+    if args.target not in ("normal", "90", "180", "270"):
+        sys.exit("方向只能是 normal|90|180|270")
+
+    transform = args.target
+    if args.flipped and transform != "normal":
+        transform = f"flipped-{transform}"
+
+    state = snapshot(1)
+    outputs = []
+    for output in state["outputs"]:
+        mode = output["current_mode"]
+        outputs.append(
+            {
+                "name": output["name"],
+                "enabled": output["enabled"],
+                "powered": output["powered"],
+                "x": output["x"],
+                "y": output["y"],
+                "mode": {
+                    "width": mode["width"],
+                    "height": mode["height"],
+                    "refresh_millihz": mode["refresh_millihz"],
+                },
+                "scale": output["scale"],
+                "transform": transform,
+                "adaptive_sync": output["adaptive_sync"],
+            }
+        )
+
+    params = {
+        "serial": state["serial"],
+        "primary_output": state.get("primary_output"),
+        "persistent": args.persistent,
+        "outputs": outputs,
+    }
+    if args.confirm_timeout > 0:
+        params["confirmation_timeout_milliseconds"] = args.confirm_timeout
+
+    result = call("outputs.apply", params, 2)
+    pending = result.get("pending_confirmation")
+    if pending:
+        token = pending.get("token")
+        call("outputs.confirm", {"token": token}, 3)
+        print(f"已应用并确认 transform={transform} token={token}")
+    else:
+        print(f"已应用 transform={transform}")
+
+
+if __name__ == "__main__":
+    main()
