@@ -429,3 +429,47 @@ plugin=org.kde.plasma.mobile.homescreen.halcyon
 
 另外删掉 Phosh 时代遗留的 `~/.config/systemd/user/wayvnc.service`
 （它会不停重启并刷 `Failed to connect to WAYLAND_DISPLAY="wayland-0"`）。
+
+## 3. Denial（2026-11-21 起，唯一桌面）
+
+Denial 是 Flutter 原生 Wayland 合成器 + 移动 shell，已彻底替换 Plasma Mobile
+（652 个包里 0 个 KDE/Qt 残留）。安装与 systemd 单元见 `tools/systemd-denial.sh`、
+`tools/systemd-denial-vt.sh`、`tools/denial-squeekboard.sh`。
+
+### 3.1 输出方向与 Phira 横屏（2026-11-22）
+
+Denial 的输出方向有两个来源，且行为不同：
+
+| 位置 | 生效时机 | 用途 |
+| --- | --- | --- |
+| `/etc/denial/outputs.conf`（`transform=DSI-1,90`） | **仅启动时**读一次 | 开机默认方向 |
+| 控制 socket `outputs.apply` | 运行时 | 临时切换 |
+
+`denialctl 0.6.6` 只封装了 `outputs` / `outputs.get`，**没有** `outputs.apply`；
+但 `deniald` 实现了它（`compositor/src/bin/deniald/output_control.rs`）。协议就是
+Unix socket 上一行 JSON（`{"version":1,"id":N,"method":..,"params":..}`），
+`tools/denial-rotate` 直接说这个协议：
+
+```sh
+denial-rotate status          # DSI-1: normal 1080x2340 scale 1.75 logical 617x1337
+denial-rotate 90              # 立即横屏
+denial-rotate normal          # 立即竖屏
+```
+
+**桌面保持竖屏，只有 Phira 横屏**：`tools/phira-launcher.sh` 装成
+`/usr/local/bin/phira`，启动时 `denial-rotate 90`，`phira-main` 退出（含崩溃）后
+`denial-rotate normal`。`Exec=/usr/local/bin/phira` 即可，图标启动也生效。
+
+### 3.2 启动器必须自己补齐环境
+
+从 `.desktop` / `gio launch` 起的进程环境里常常没有 `XDG_RUNTIME_DIR` 和 `DISPLAY`，
+后果是**两个**：`denial-rotate` 找不到控制 socket（不旋转），Phira 找不到 PipeWire
+socket（`snd_pcm_hw_params ... No such file or directory (2)` → 静默模式 → `buffer is full`）。
+启动器里按 `id -u` / `getent passwd` 兜底即可，`env -i` 干净环境验证通过。
+
+### 3.3 传感器自动旋转不可用
+
+`deniald` 从 `org.steinerd.Sensors1`（steinerd，system bus）取方向，本机没装
+steinerd、`/sys/bus/iio/devices` 里也只有 PMIC ADC 没有加速度计，所以
+`rotationLock` 无论 `enabled` 与否都不会改变输出方向。它的作用是「锁住传感器方向」，
+不是「强制旋转」。另外热改 `settings.json` 会生效但不会转屏。
