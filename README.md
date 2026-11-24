@@ -36,7 +36,7 @@ partition — the kernel is always loaded into RAM with `fastboot boot`.
 | Vulkan / OpenGL | **works** | turnip (`vulkan-freedreno`) + freedreno: Vulkan 1.3.354, GL 4.6 / GLES 3.2 (`FD650`), see `docs/GPU.md` §5.1 |
 | KDE Plasma Mobile | **works** | 6.8.1 on Wayland (kwin_wayland, scale 2.5), boot straight into it; see `docs/KDE.md` |
 | Rootfs on UFS | **works** | 223 GiB ext4 on userdata (`/dev/sda34`) |
-| 90 Hz mode | no | second timing exists in the panel node, not enabled |
+| 90 Hz mode | works | second timing exists in the panel node, not enabled |
 
 ## Hardware
 
